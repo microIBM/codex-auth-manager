@@ -8,6 +8,7 @@ interface AppConfigInput {
   provider?: unknown;
   defaultPassword?: unknown;
   loopDelayMs?: unknown;
+  registrationConcurrency?: unknown;
   gmailAccessToken?: unknown;
   gmailEmailAddress?: unknown;
   gptMailApiKey?: unknown;
@@ -48,6 +49,7 @@ export interface AppConfig {
   provider: MailProviderName;
   defaultPassword: string;
   loopDelayMs: number;
+  registrationConcurrency: number;
   gmailAccessToken: string;
   gmailEmailAddress: string;
   gptMailApiKey: string;
@@ -88,6 +90,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   provider: "proxiedmail",
   defaultPassword: "",
   loopDelayMs: 120000,
+  registrationConcurrency: 8,
   gmailAccessToken: "",
   gmailEmailAddress: "",
   gptMailApiKey: "",
@@ -167,6 +170,17 @@ function normalizeNumber(value: unknown, fallback: number): number {
   return value;
 }
 
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, parsed);
+}
+
 function normalizeOptionalNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
@@ -241,6 +255,10 @@ function normalizeConfig(parsed: AppConfigInput): AppConfig {
     provider: normalizeProvider(parsed.provider),
     defaultPassword: normalizeString(parsed.defaultPassword, DEFAULT_CONFIG.defaultPassword),
     loopDelayMs: normalizeNumber(parsed.loopDelayMs, DEFAULT_CONFIG.loopDelayMs),
+    registrationConcurrency: normalizePositiveInteger(
+      parsed.registrationConcurrency,
+      DEFAULT_CONFIG.registrationConcurrency,
+    ),
     gmailAccessToken: normalizeString(parsed.gmailAccessToken, DEFAULT_CONFIG.gmailAccessToken),
     gmailEmailAddress: normalizeString(parsed.gmailEmailAddress, DEFAULT_CONFIG.gmailEmailAddress),
     gptMailApiKey: normalizeString(parsed.gptMailApiKey, DEFAULT_CONFIG.gptMailApiKey),

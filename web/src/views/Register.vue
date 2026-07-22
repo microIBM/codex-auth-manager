@@ -14,15 +14,18 @@ const inputValue = ref("");
 const waitingPrompt = ref("");
 const starting = ref(false);
 const cancelling = ref(false);
+const savingConcurrency = ref(false);
 const logBoxRef = ref<HTMLElement | null>(null);
 const stickToLatestLog = ref(true);
 let source: EventSource | null = null;
+const DEFAULT_REGISTRATION_CONCURRENCY = 8;
 
 const form = reactive({
   useMailboxPool: true,
   mailboxSourceId: "",
   emailText: "",
   rounds: 1,
+  concurrency: DEFAULT_REGISTRATION_CONCURRENCY,
   password: "",
   mode: "sign",
   manualOtp: false,
@@ -56,6 +59,17 @@ function normalizeEmail(value: string) {
   const input = String(value ?? "").trim();
   const match = input.match(/<([^>]+)>/);
   return (match?.[1] ?? input).trim().toLowerCase();
+}
+
+function normalizeConcurrency(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return DEFAULT_REGISTRATION_CONCURRENCY;
+  }
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_REGISTRATION_CONCURRENCY;
+  }
+  return Math.max(1, parsed);
 }
 
 const emails = computed(() => form.emailText.split(/\r?\n|,/).map(normalizeEmail).filter(Boolean));
@@ -94,7 +108,7 @@ function appendEvent(event: JobEvent) {
   const shouldFollow = stickToLatestLog.value;
   applyRegisterStatsEvent(stats, event.message);
   events.value.push(event);
-  if (event.message.startsWith("请输入")) {
+  if (event.message.includes("请输入")) {
     waitingPrompt.value = event.message;
     if (currentJob.value) {
       currentJob.value = {
@@ -112,12 +126,14 @@ function appendEvent(event: JobEvent) {
 
 async function loadMeta() {
   try {
-    const [typePayload, sourcePayload] = await Promise.all([
+    const [typePayload, sourcePayload, configPayload] = await Promise.all([
       apiGet<{types: MailType[]}>("/api/mail-types"),
       apiGet<{sources: MailSource[]}>("/api/mail-sources"),
+      apiGet<Record<string, unknown>>("/api/config"),
     ]);
     types.value = typePayload.types.filter((item) => item.enabled);
     sources.value = sourcePayload.sources.filter((item) => item.enabled);
+    form.concurrency = normalizeConcurrency(configPayload.registrationConcurrency);
     if (!form.mailboxSourceId && filteredSources.value[0]) {
       form.mailboxSourceId = String(filteredSources.value[0].id);
     }
@@ -155,6 +171,27 @@ function connectStream(id: number) {
   };
 }
 
+async function saveRegistrationConcurrency(options: {silent?: boolean} = {}) {
+  const concurrency = normalizeConcurrency(form.concurrency);
+  form.concurrency = concurrency;
+  savingConcurrency.value = true;
+  try {
+    const payload = await apiSend<Record<string, unknown>>("/api/config", "PUT", {
+      registrationConcurrency: concurrency,
+    });
+    form.concurrency = normalizeConcurrency(payload.registrationConcurrency);
+    if (!options.silent) {
+      ElMessage.success("并发线程数已保存");
+    }
+    return true;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+    return false;
+  } finally {
+    savingConcurrency.value = false;
+  }
+}
+
 async function start() {
   if (form.useMailboxPool && !form.mailboxSourceId) {
     ElMessage.warning("请先选择邮箱来源");
@@ -162,10 +199,14 @@ async function start() {
   }
   starting.value = true;
   try {
+    if (!(await saveRegistrationConcurrency({silent: true}))) {
+      return;
+    }
     resetStats();
     const result = await apiSend<{job: Job}>("/api/jobs/register", "POST", {
       emails: emails.value,
       rounds: emails.value.length ? emails.value.length : form.rounds,
+      concurrency: form.concurrency,
       password: form.password || undefined,
       manualOtp: form.manualOtp,
       enableSmsVerification: form.enableSmsVerification,
@@ -314,12 +355,23 @@ onBeforeUnmount(() => source?.close());
           </el-form-item>
 
           <el-row :gutter="12">
-            <el-col :xs="24" :sm="12">
+            <el-col :xs="24" :sm="8">
               <el-form-item label="轮数">
                 <el-input-number v-model="form.rounds" :min="1" class="w-full" />
               </el-form-item>
             </el-col>
-            <el-col :xs="24" :sm="12">
+            <el-col :xs="24" :sm="8">
+              <el-form-item label="并发线程数">
+                <el-input-number
+                  v-model="form.concurrency"
+                  :min="1"
+                  :disabled="savingConcurrency"
+                  class="w-full"
+                  @change="() => saveRegistrationConcurrency()"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :xs="24" :sm="8">
               <el-form-item label="模式">
                 <el-select v-model="form.mode" class="w-full">
                   <el-option v-for="mode in registerModes" :key="mode.value" :label="mode.label" :value="mode.value" />
@@ -334,6 +386,9 @@ onBeforeUnmount(() => source?.close());
 
           <el-form-item label="邮箱验证码">
             <el-switch v-model="form.manualOtp" active-text="手动输入邮箱验证码" />
+            <div v-if="form.manualOtp && form.concurrency > 1" class="mt-2 text-sm text-amber-600">
+              手动输入验证码时后端会自动按 1 个线程执行，避免多个验证码提示共用同一个输入框。
+            </div>
           </el-form-item>
 
           <el-form-item label="短信验证码">
@@ -406,6 +461,7 @@ onBeforeUnmount(() => source?.close());
                 <el-tag>{{ types.length }} 类型</el-tag>
                 <el-tag type="success">{{ filteredSources.length }} 可用来源</el-tag>
                 <el-tag type="info">{{ form.useMailboxPool ? "按来源取号" : `${emails.length} 手动邮箱` }}</el-tag>
+                <el-tag type="warning">并发 {{ form.manualOtp ? 1 : form.concurrency }}</el-tag>
                 <el-tag :type="form.enableSmsVerification ? 'success' : 'warning'">
                   短信{{ form.enableSmsVerification ? "启用" : "关闭" }}
                 </el-tag>

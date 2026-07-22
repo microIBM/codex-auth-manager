@@ -144,7 +144,10 @@ export interface MailboxLatestEmailResult {
     error?: string;
 }
 
-let reservedMailboxId: number | null = null;
+export interface DatabaseMailboxProvider extends EmailCodeProvider {
+    consumeReservedMailbox(): MailboxRow | null;
+    getReservedMailboxPassword(): Promise<string>;
+}
 
 const PROVIDERS: MailProviderName[] = ["proxiedmail", "gmail", "gptmail", "hotmail", "2925", "cloudflare"];
 const AUTO_CODE_PROVIDERS = new Set<MailProviderName>(PROVIDERS);
@@ -902,7 +905,7 @@ export function reserveMailbox(sourceId?: number, typeId?: number): MailboxRow {
         JOIN mail_sources s ON s.id = m.source_id
         WHERE s.enabled = 1
           AND m.used = 0
-          AND m.status IN ('unused', 'reserved')
+          AND m.status = 'unused'
           AND (@sourceId IS NULL OR m.source_id = @sourceId)
           AND (@typeId IS NULL OR m.mail_type_id = @typeId)
         ORDER BY m.last_used_at ASC NULLS FIRST, m.id ASC
@@ -917,19 +920,24 @@ export function reserveMailbox(sourceId?: number, typeId?: number): MailboxRow {
             updated_at = ?
         WHERE id = ?
     `).run(currentTimestamp(), row.id);
-  reservedMailboxId = row.id;
   recordMailEvent(row.source_id, row.id, "reserved", "注册任务占用邮箱");
   return ensureMailbox(row.id);
 }
 
-export function createDatabaseMailboxProvider(sourceId?: number, typeId?: number): EmailCodeProvider {
+export function createDatabaseMailboxProvider(sourceId?: number, typeId?: number): DatabaseMailboxProvider {
+  let providerReservedMailboxId: number | null = null;
   return {
     async getEmailAddress(): Promise<string> {
       const mailbox = reserveMailbox(sourceId, typeId);
+      providerReservedMailboxId = mailbox.id;
       return mailbox.email;
     },
     async getEmailVerificationCode(email: string, options?: EmailVerificationCodeOptions): Promise<string> {
-      const mailbox = getDb().prepare("SELECT * FROM mailboxes WHERE email = ? ORDER BY updated_at DESC LIMIT 1").get(normalizeMailbox(email)) as MailboxRow | undefined;
+      const normalizedEmail = normalizeMailbox(email);
+      const scopedMailbox = providerReservedMailboxId ? ensureMailbox(providerReservedMailboxId) : undefined;
+      const mailbox = scopedMailbox?.email === normalizedEmail
+        ? scopedMailbox
+        : getDb().prepare("SELECT * FROM mailboxes WHERE email = ? ORDER BY updated_at DESC LIMIT 1").get(normalizedEmail) as MailboxRow | undefined;
       if (!mailbox) {
         throw new Error(`邮箱池未找到邮箱: ${email}`);
       }
@@ -969,6 +977,21 @@ export function createDatabaseMailboxProvider(sourceId?: number, typeId?: number
         recordMailEvent(source.id, mailbox.id, "code_failed", message);
         throw error;
       }
+    },
+    async getReservedMailboxPassword(): Promise<string> {
+      if (!providerReservedMailboxId) {
+        return "";
+      }
+      const mailbox = ensureMailbox(providerReservedMailboxId);
+      return mailbox.password_encrypted ? decryptSecret(mailbox.password_encrypted) : "";
+    },
+    consumeReservedMailbox(): MailboxRow | null {
+      if (!providerReservedMailboxId) {
+        return null;
+      }
+      const mailbox = ensureMailbox(providerReservedMailboxId);
+      providerReservedMailboxId = null;
+      return mailbox;
     },
   };
 }
@@ -1087,21 +1110,4 @@ export async function fetchLatestMailboxEmail(id: number): Promise<MailboxLatest
     recordMailEvent(source.id, mailbox.id, "mail_fetch_failed", message);
     return {ok: false, error: message};
   }
-}
-
-export async function getReservedMailboxPassword(): Promise<string> {
-  if (!reservedMailboxId) {
-    return "";
-  }
-  const mailbox = ensureMailbox(reservedMailboxId);
-  return mailbox.password_encrypted ? decryptSecret(mailbox.password_encrypted) : "";
-}
-
-export function consumeReservedMailbox(): MailboxRow | null {
-  if (!reservedMailboxId) {
-    return null;
-  }
-  const mailbox = ensureMailbox(reservedMailboxId);
-  reservedMailboxId = null;
-  return mailbox;
 }

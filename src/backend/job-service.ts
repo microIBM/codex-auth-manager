@@ -13,8 +13,13 @@ interface JobEventPayload {
     created_at: string;
 }
 
+interface JobLogContext {
+  jobId: number;
+  threadLabel?: string;
+}
+
 const emitter = new EventEmitter();
-const consoleCaptureContext = new AsyncLocalStorage<number>();
+const consoleCaptureContext = new AsyncLocalStorage<JobLogContext>();
 let activeRegisterJobId: number | null = null;
 let consoleCaptureInstallCount = 0;
 let originalConsoleLog: typeof console.log | null = null;
@@ -83,19 +88,38 @@ export function listJobEvents(jobId: number, afterId = 0): JobEventRow[] {
 
 export function addJobEvent(jobId: number, level: JobLevel, message: string): JobEventPayload {
   const timestamp = currentTimestamp();
+  const eventMessage = formatJobEventMessage(jobId, message);
   const result = getDb().prepare(`
         INSERT INTO job_events (job_id, level, message, created_at)
         VALUES (?, ?, ?, ?)
-    `).run(jobId, level, message, timestamp);
+    `).run(jobId, level, eventMessage, timestamp);
   const event = {
     id: Number(result.lastInsertRowid),
     job_id: jobId,
     level,
-    message,
+    message: eventMessage,
     created_at: timestamp,
   };
   emitter.emit(`job:${jobId}`, event);
   return event;
+}
+
+function formatJobEventMessage(jobId: number, message: string): string {
+  const context = consoleCaptureContext.getStore();
+  const threadLabel = context?.jobId === jobId ? context.threadLabel : undefined;
+  if (!threadLabel || message.startsWith("jobStatus:") || message.startsWith(`[${threadLabel}] `)) {
+    return message;
+  }
+  return `[${threadLabel}] ${message}`;
+}
+
+export async function withJobLogThread<T>(threadLabel: string, runner: () => Promise<T>): Promise<T> {
+  const context = consoleCaptureContext.getStore();
+  const normalizedThreadLabel = String(threadLabel ?? "").trim();
+  if (!context || !normalizedThreadLabel) {
+    return runner();
+  }
+  return consoleCaptureContext.run({...context, threadLabel: normalizedThreadLabel}, runner);
 }
 
 export function updateJobStatus(
@@ -222,7 +246,7 @@ async function withConsoleCapture<T>(jobId: number, runner: () => Promise<T>): P
   const cleanup = installConsoleCapture();
 
   try {
-    return await consoleCaptureContext.run(jobId, runner);
+    return await consoleCaptureContext.run({jobId}, runner);
   } finally {
     cleanup();
   }
@@ -251,23 +275,23 @@ function installConsoleCapture(): () => void {
     originalConsoleWarn = console.warn;
     originalConsoleError = console.error;
     console.log = (...items: unknown[]) => {
-      const jobId = consoleCaptureContext.getStore();
-      if (jobId) {
-        addJobEvent(jobId, "info", serializeConsoleItems(items));
+      const context = consoleCaptureContext.getStore();
+      if (context?.jobId) {
+        addJobEvent(context.jobId, "info", serializeConsoleItems(items));
       }
       originalConsoleLog?.(...items);
     };
     console.warn = (...items: unknown[]) => {
-      const jobId = consoleCaptureContext.getStore();
-      if (jobId) {
-        addJobEvent(jobId, "warn", serializeConsoleItems(items));
+      const context = consoleCaptureContext.getStore();
+      if (context?.jobId) {
+        addJobEvent(context.jobId, "warn", serializeConsoleItems(items));
       }
       originalConsoleWarn?.(...items);
     };
     console.error = (...items: unknown[]) => {
-      const jobId = consoleCaptureContext.getStore();
-      if (jobId) {
-        addJobEvent(jobId, "error", serializeConsoleItems(items));
+      const context = consoleCaptureContext.getStore();
+      if (context?.jobId) {
+        addJobEvent(context.jobId, "error", serializeConsoleItems(items));
       }
       originalConsoleError?.(...items);
     };

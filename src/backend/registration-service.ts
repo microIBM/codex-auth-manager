@@ -23,10 +23,10 @@ import {
   throwIfJobCancelled,
   updateJobStatus,
   waitForJobInput,
+  withJobLogThread,
 } from "./job-service.js";
 import {getDb, currentTimestamp} from "./db.js";
 import {
-  consumeReservedMailbox,
   createDatabaseMailboxProvider,
   createMailboxProviderById,
   markMailboxUsed,
@@ -40,6 +40,11 @@ import {
   type PushServiceConfig,
 } from "./integration-service.js";
 import {ensureAccountPlatformBinding} from "./account-platform-binding-service.js";
+import {
+  DEFAULT_REGISTRATION_CONCURRENCY,
+  resolveRegistrationConcurrency,
+  runConcurrentRegistrationRounds,
+} from "./registration-concurrency.js";
 
 const OPENAI_PASSWORD_MIN_LENGTH = 8;
 type UploadTarget = "none" | "cpa" | "sub2api" | "both";
@@ -54,6 +59,7 @@ export interface RegisterOptions {
     directSignupAuth?: boolean;
     saveAccessToken?: boolean;
     enableSmsVerification?: boolean;
+    concurrency?: number;
     password?: string;
     mailboxSourceId?: number;
     mailboxTypeId?: number;
@@ -120,6 +126,10 @@ function rethrowIfCancellation(error: unknown, options: RegisterOptions): void {
   if (error instanceof JobCancelledError || shouldCancelRegistration(options)) {
     throw error;
   }
+}
+
+function isRegistrationCancellation(error: unknown, options: RegisterOptions): boolean {
+  return error instanceof JobCancelledError || shouldCancelRegistration(options);
 }
 
 function logEmailOtpCode(targetEmail: string, code: string): void {
@@ -400,7 +410,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       const finalPassword = password;
       console.log(`[授权成功] 邮箱：${client.email} 密码：${finalPassword} 授权文件：${result.authFile ?? ""}`);
       await removeSuccessfulEmail(client.email);
-      const mailbox = consumeReservedMailbox();
+      const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
       const imported = await importAuthFileFromResult(result.authFile, finalPassword, {
         sourceId: mailbox?.source_id ?? null,
         mailboxId: mailbox?.id ?? null,
@@ -413,7 +423,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     } catch (error) {
       rethrowIfCancellation(error, options);
       await recordAuthFailureEmail(client.email);
-      const mailbox = consumeReservedMailbox();
+      const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
       if (mailbox) {
         setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
       }
@@ -438,7 +448,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
   } catch (error) {
     rethrowIfCancellation(error, options);
     await recordAuthFailureEmail(registerClient.email);
-    const mailbox = consumeReservedMailbox();
+    const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
       setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
     }
@@ -449,7 +459,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     throwIfJobCancelled(options.jobId);
     const accessToken = await registerClient.getChatGPTAccessToken();
     const accessTokenFile = await registerClient.saveChatGPTAccessToken(accessToken);
-    const mailbox = consumeReservedMailbox();
+    const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     await importAuthFileFromResult(accessTokenFile, password, {
       sourceId: mailbox?.source_id ?? null,
       mailboxId: mailbox?.id ?? null,
@@ -479,7 +489,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     const finalPassword = password;
     console.log(`[授权成功] 邮箱：${loginClient.email} 密码：${finalPassword} 授权文件：${result.authFile ?? ""}`);
     await removeSuccessfulEmail(loginClient.email);
-    const mailbox = consumeReservedMailbox();
+    const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     const imported = await importAuthFileFromResult(result.authFile, finalPassword, {
       sourceId: mailbox?.source_id ?? null,
       mailboxId: mailbox?.id ?? null,
@@ -492,25 +502,11 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
   } catch (error) {
     rethrowIfCancellation(error, options);
     await recordAuthFailureEmail(loginClient.email);
-    const mailbox = consumeReservedMailbox();
+    const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
       setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
     }
     throw error;
-  }
-}
-
-async function waitBetweenRegistrationRounds(jobId: number | undefined, delayMs: number, nextRound: number): Promise<void> {
-  const normalizedDelayMs = Math.max(0, Math.floor(delayMs));
-  if (!normalizedDelayMs) {
-    return;
-  }
-  const seconds = Math.ceil(normalizedDelayMs / 1000);
-  console.log(`[延迟] 轮次间等待 ${seconds}s，之后开始第 ${nextRound} 轮`);
-  const deadline = Date.now() + normalizedDelayMs;
-  while (Date.now() < deadline) {
-    throwIfJobCancelled(jobId);
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, deadline - Date.now()))));
   }
 }
 
@@ -541,55 +537,90 @@ async function runRegistrationJobInner(options: RegisterOptions): Promise<Regist
   const maxRounds = options.rounds && options.rounds > 0 ? options.rounds : (emails.length || 1);
   const usesMailboxPool = Boolean(options.useMailboxPool && emails.length === 0);
   const usesHotmailEmailQueue = appConfig.provider === "hotmail" && emails.length === 0 && !usesMailboxPool;
+  const requestedConcurrency = resolveRegistrationConcurrency(
+    options.concurrency ?? appConfig.registrationConcurrency ?? DEFAULT_REGISTRATION_CONCURRENCY,
+  );
+  const concurrency = options.manualOtp && requestedConcurrency > 1 ? 1 : requestedConcurrency;
   if (usesHotmailEmailQueue) {
     const errorFile = await clearErrorEmailFile(await getHotmailEmailsFile());
     console.log(`[失败记录] 已清理 ${errorFile}`);
   }
 
-  const sharedBroker = createBrokerForRegistration(options);
+  let effectiveRounds = maxRounds;
+  if (usesHotmailEmailQueue) {
+    const remaining = await getHotmailRemainingEmailCount();
+    if (remaining <= 0) {
+      console.log("邮箱列表已全部使用完毕，自动停止");
+      effectiveRounds = 0;
+    } else if (remaining < effectiveRounds) {
+      effectiveRounds = remaining;
+      console.log(`邮箱列表剩余 ${remaining} 个，本次任务轮数调整为 ${effectiveRounds}`);
+    }
+  }
+
+  if (options.manualOtp && requestedConcurrency > 1) {
+    const message = "手动邮箱验证码模式需要逐个输入验证码，已自动将并发线程数调整为 1";
+    console.warn(`[并发调度] ${message}`);
+    if (options.jobId) {
+      addJobEvent(options.jobId, "warn", message);
+    }
+  }
+
+  const sharedBroker = concurrency === 1 ? createBrokerForRegistration(options) : undefined;
+  if (options.jobId) {
+    addJobEvent(options.jobId, "info", `注册并发线程数: ${concurrency}`);
+  }
   if (sharedBroker && options.jobId) {
     addJobEvent(options.jobId, "info", "已启用 SMS 号码跨轮复用：同一号码会继续 requestAnotherSms 直至达到使用上限");
+  } else if (options.jobId && concurrency > 1 && isSmsVerificationEnabled(options) && appConfig.heroSMSApiKey) {
+    addJobEvent(options.jobId, "info", "并发注册模式下每轮独立使用 SMS broker，避免多个线程共享同一个号码状态");
+  }
+  if (appConfig.loopDelayMs > 0 && effectiveRounds > concurrency) {
+    console.log(`[并发调度] 每个线程完成一轮后等待 ${Math.ceil(appConfig.loopDelayMs / 1000)}s 再领取下一轮`);
   }
 
   let success = 0;
   let failed = 0;
+  let completed = 0;
   let smsNumbersUsed = 0;
   let smsSuccessCount = 0;
   const successEmails: string[] = [];
   const failedEmails: string[] = [];
 
   try {
-    for (let index = 0; index < maxRounds; index += 1) {
-      throwIfJobCancelled(options.jobId);
-      if (usesHotmailEmailQueue) {
-        const remaining = await getHotmailRemainingEmailCount();
-        if (remaining <= 0) {
-          console.log("邮箱列表已全部使用完毕，自动停止");
-          break;
+    await runConcurrentRegistrationRounds<SingleRegistrationResult | null>({
+      totalRounds: effectiveRounds,
+      concurrency,
+      waitBetweenRoundsMs: appConfig.loopDelayMs,
+      shouldCancel: () => shouldCancelRegistration(options),
+      abortOnError: (error) => isRegistrationCancellation(error, options),
+      runRound: async (index, context) => withJobLogThread(context.threadLabel, async () => {
+        throwIfJobCancelled(options.jobId);
+        const targetEmail = emails[index] ?? "";
+        const modeLabel = usesMailboxPool ? "邮箱池" : (targetEmail ? "指定邮箱" : "自动邮箱");
+        console.log(`第 ${index + 1}/${effectiveRounds} 轮开始: 并发=${concurrency} 已完成=${completed} 成功=${success} 失败=${failed} 模式=${modeLabel}`);
+        try {
+          const result = await runSingleRegistration(options, targetEmail, sharedBroker);
+          success += 1;
+          smsNumbersUsed += result.smsNumbersUsed;
+          smsSuccessCount += result.smsSuccessCount;
+          successEmails.push(result.email);
+          return result;
+        } catch (error) {
+          rethrowIfCancellation(error, options);
+          failed += 1;
+          const message = error instanceof Error ? error.message : String(error);
+          failedEmails.push(targetEmail || "auto");
+          console.error(`[授权失败] ${targetEmail || "auto"} ${message}`);
+          return null;
+        } finally {
+          if (!shouldCancelRegistration(options)) {
+            completed += 1;
+            console.log(`[任务统计] 总轮数 ${effectiveRounds}，已完成 ${completed}，成功 ${success}，失败 ${failed}，短信号码 ${smsNumbersUsed}，短信成功 ${smsSuccessCount}`);
+          }
         }
-      }
-
-      const targetEmail = emails[index] ?? "";
-      const modeLabel = usesMailboxPool ? "邮箱池" : (targetEmail ? "指定邮箱" : "自动邮箱");
-      console.log(`第 ${index + 1} 轮开始: 成功=${success} 失败=${failed} 模式=${modeLabel}`);
-      try {
-        const result = await runSingleRegistration(options, targetEmail, sharedBroker);
-        success += 1;
-        smsNumbersUsed += result.smsNumbersUsed;
-        smsSuccessCount += result.smsSuccessCount;
-        successEmails.push(result.email);
-      } catch (error) {
-        rethrowIfCancellation(error, options);
-        failed += 1;
-        const message = error instanceof Error ? error.message : String(error);
-        failedEmails.push(targetEmail || "auto");
-        console.error(`[授权失败] ${targetEmail || "auto"} ${message}`);
-      }
-      console.log(`[任务统计] 总轮数 ${maxRounds}，已完成 ${index + 1}，成功 ${success}，失败 ${failed}，短信号码 ${smsNumbersUsed}，短信成功 ${smsSuccessCount}`);
-      if (index < maxRounds - 1) {
-        await waitBetweenRegistrationRounds(options.jobId, appConfig.loopDelayMs, index + 2);
-      }
-    }
+      }),
+    });
   } finally {
     if (sharedBroker) {
       try {
@@ -607,7 +638,6 @@ async function runRegistrationJobInner(options: RegisterOptions): Promise<Regist
     smsSuccessCount = summary.smsSuccessCount;
   }
 
-  const completed = success + failed;
   console.log(`自动模式结束: 已执行=${completed} 成功=${success} 失败=${failed} 短信号码=${smsNumbersUsed} 短信成功=${smsSuccessCount}`);
   console.log(`成功邮箱(${successEmails.length}): ${successEmails.length ? successEmails.join(", ") : "无"}`);
   console.log(`失败邮箱(${failedEmails.length}): ${failedEmails.length ? failedEmails.join(", ") : "无"}`);
