@@ -916,7 +916,7 @@ export class OpenAIClient {
 
     for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
       this.throwIfCancelled();
-      console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从 HeroSMS 获取号码`);
+      console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从短信平台获取号码`);
       const lease = await this.smsBroker.getActivation();
       const phoneNumber = `+${lease.phoneNumber}`;
 

@@ -3,6 +3,7 @@ import {computed, onMounted, reactive, ref, watch} from "vue";
 import {ElMessage} from "element-plus";
 import {Check, Connection, Refresh} from "@element-plus/icons-vue";
 import {apiGet, apiSend, type HeroSmsBalance, type HeroSmsCountry, type HeroSmsPrice} from "../api";
+import {formatSmsCountryLabel} from "../sms-country-label";
 
 const config = reactive<Record<string, any>>({});
 const scheduler = reactive({enabled: true, dailyTime: "03:30", lastRunStatus: "", nextRunHint: ""});
@@ -17,6 +18,10 @@ const loadingHero = ref(false);
 const loadingHeroPrices = ref(false);
 const heroService = ref("dr");
 let heroServiceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+const smsProviderOptions = [
+  {label: "HeroSMS", value: "hero-sms"},
+  {label: "GrizzlySMS", value: "grizzly-sms"},
+];
 const testingProxy = ref(false);
 const proxyTestResult = ref<{
   ok: boolean;
@@ -41,6 +46,7 @@ const secretKeys = [
   "2925Password",
   "cloudflareApiKey",
   "heroSMSApiKey",
+  "grizzlySMSApiKey",
   "webAccessPassword",
 ];
 
@@ -64,10 +70,19 @@ const legacyPushConfigKeys = new Set([
 ]);
 
 const selectedHeroPrice = computed(() => heroPrices.value[0]);
-const selectedHeroCountry = computed(() => heroCountries.value.find((country) => String(country.countryId) === String(config.heroSMSCountry)) ?? null);
+const selectedSmsProvider = computed(() => config.smsProvider === "grizzly-sms" ? "grizzly-sms" : "hero-sms");
+const smsProviderLabel = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "GrizzlySMS" : "HeroSMS");
+const smsProviderHomeUrl = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "https://grizzlysms.com/" : "https://hero-sms.com/?ref=964178");
+const smsApiBasePath = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "/api/grizzly-sms" : "/api/hero-sms");
+const smsApiKeyConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSApiKey" : "heroSMSApiKey");
+const smsCountryConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSCountry" : "heroSMSCountry");
+const smsMaxPriceConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSMaxPrice" : "heroSMSMaxPrice");
+const smsPollAttemptsConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSPollAttempts" : "heroSMSPollAttempts");
+const smsPollIntervalConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSPollIntervalMs" : "heroSMSPollIntervalMs");
+const selectedHeroCountry = computed(() => heroCountries.value.find((country) => String(country.countryId) === String(config[smsCountryConfigKey.value])) ?? null);
 const heroPriceStatus = computed(() => {
   const price = selectedHeroPrice.value?.price;
-  const maxPrice = Number(config.heroSMSMaxPrice);
+  const maxPrice = Number(config[smsMaxPriceConfigKey.value]);
   if (typeof price !== "number" || !Number.isFinite(price) || !Number.isFinite(maxPrice) || maxPrice <= 0) {
     return null;
   }
@@ -82,13 +97,6 @@ const heroPriceStatus = computed(() => {
     title: `当前价格 ${formatPrice(selectedHeroPrice.value)} 未超过最高价格 ${maxPrice}`,
   };
 });
-
-function heroCountryLabel(country: HeroSmsCountry) {
-  const primary = country.countryName || country.countryNameEn || country.countryNameRu || `国家 ID: ${country.countryId}`;
-  const secondary = country.countryNameEn && country.countryNameEn !== primary ? ` / ${country.countryNameEn}` : "";
-  const phoneCode = country.phoneCode ? ` +${country.phoneCode}` : "";
-  return `${primary}${secondary}${phoneCode} (ID: ${country.countryId})`;
-}
 
 async function load() {
   try {
@@ -137,7 +145,7 @@ async function save() {
       secretInputs[key] = "";
     }
     ElMessage.success("配置已保存");
-    await loadHeroPrices();
+    await refreshHeroSms();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   }
@@ -166,7 +174,7 @@ async function loadHeroCountries() {
   loadingHero.value = true;
   heroError.value = "";
   try {
-    const payload = await apiGet<{countries: HeroSmsCountry[]; error?: string}>("/api/hero-sms/countries");
+    const payload = await apiGet<{countries: HeroSmsCountry[]; error?: string}>(`${smsApiBasePath.value}/countries`);
     heroCountries.value = payload.countries;
     heroError.value = payload.error || "";
   } catch (error) {
@@ -180,7 +188,7 @@ async function loadHeroBalance() {
   heroBalanceError.value = "";
   heroBalance.value = null;
   try {
-    const payload = await apiGet<{balance: HeroSmsBalance | null; error?: string}>("/api/hero-sms/balance");
+    const payload = await apiGet<{balance: HeroSmsBalance | null; error?: string}>(`${smsApiBasePath.value}/balance`);
     heroBalance.value = payload.balance;
     heroBalanceError.value = payload.error || "";
   } catch (error) {
@@ -191,13 +199,14 @@ async function loadHeroBalance() {
 async function loadHeroPrices() {
   heroPriceError.value = "";
   heroPrices.value = [];
-  if (!config.heroSMSCountry) {
+  const country = config[smsCountryConfigKey.value];
+  if (!country) {
     return;
   }
   loadingHeroPrices.value = true;
   try {
     const service = heroService.value.trim() || "dr";
-    const payload = await apiGet<{prices: HeroSmsPrice[]; error?: string}>(`/api/hero-sms/prices?country=${encodeURIComponent(config.heroSMSCountry)}&service=${encodeURIComponent(service)}`);
+    const payload = await apiGet<{prices: HeroSmsPrice[]; error?: string}>(`${smsApiBasePath.value}/prices?country=${encodeURIComponent(country)}&service=${encodeURIComponent(service)}`);
     heroPrices.value = payload.prices;
     heroPriceError.value = payload.error || "";
   } catch (error) {
@@ -236,8 +245,8 @@ function formatAvailable(value: HeroSmsPrice | null | undefined) {
   return String(value.available);
 }
 
-watch(() => config.heroSMSCountry, () => {
-  void loadHeroPrices();
+watch(() => [config.smsProvider, config.heroSMSCountry, config.grizzlySMSCountry], () => {
+  void refreshHeroSms();
 });
 
 watch(heroService, () => {
@@ -319,18 +328,21 @@ onMounted(load);
           <template #header>
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <span>HeroSMS</span>
-                <a href="https://hero-sms.com/?ref=964178" target="_blank" rel="noopener noreferrer"
+                <span>短信接码</span>
+                <a :href="smsProviderHomeUrl" target="_blank" rel="noopener noreferrer"
                    class="text-lg text-[var(--el-color-primary)] hover:underline font-bold ">
-                  点击注册
+                  {{ smsProviderLabel }}
                 </a>
               </div>
               <el-button :icon="Refresh" :loading="loadingHero || loadingHeroPrices" size="small" @click="refreshHeroSms">刷新</el-button>
             </div>
           </template>
           <el-form label-position="top" :model="config">
-            <el-form-item label="HeroSMS API Key">
-              <el-input v-model="secretInputs.heroSMSApiKey" type="password" show-password :placeholder="secretPlaceholder('heroSMSApiKey')" />
+            <el-form-item label="短信平台">
+              <el-segmented v-model="config.smsProvider" :options="smsProviderOptions" class="w-full" />
+            </el-form-item>
+            <el-form-item :label="`${smsProviderLabel} API Key`">
+              <el-input v-model="secretInputs[smsApiKeyConfigKey]" type="password" show-password :placeholder="secretPlaceholder(smsApiKeyConfigKey)" />
             </el-form-item>
             <div class="mb-3 rounded-lg border border-[var(--el-border-color-light)] bg-[var(--el-fill-color-lighter)] px-3 py-2">
               <div class="text-xs text-[var(--el-text-color-secondary)]">当前余额</div>
@@ -338,17 +350,17 @@ onMounted(load);
               <div v-if="heroBalanceError" class="mt-1 text-xs text-amber-600">{{ heroBalanceError }}</div>
             </div>
             <el-form-item label="国家">
-              <el-select v-model="config.heroSMSCountry" filterable class="w-full" placeholder="选择国家">
+              <el-select v-model="config[smsCountryConfigKey]" filterable class="w-full" placeholder="选择国家">
                 <el-option
                   v-for="country in heroCountries"
                   :key="country.countryId"
-                  :label="heroCountryLabel(country)"
+                  :label="formatSmsCountryLabel(country)"
                   :value="country.countryId"
                   class="hero-country-option"
                 >
                   <div class="flex h-8 items-center justify-between gap-3">
                     <span class="min-w-0 truncate text-sm">
-                      {{ heroCountryLabel(country) }}
+                      {{ formatSmsCountryLabel(country) }}
                     </span>
                     <span class="flex shrink-0 items-center gap-1">
                       <el-tag v-if="country.visible === false" size="small" type="danger" effect="plain">隐藏</el-tag>
@@ -363,18 +375,18 @@ onMounted(load);
             </el-form-item>
             <el-row :gutter="12">
               <el-col :xs="24" :sm="12">
-                <el-form-item label="最高价格"><el-input-number v-model="config.heroSMSMaxPrice" :step="0.01" :min="0" class="w-full" /></el-form-item>
+                <el-form-item label="最高价格"><el-input-number v-model="config[smsMaxPriceConfigKey]" :step="0.01" :min="0" class="w-full" /></el-form-item>
               </el-col>
               <el-col :xs="24" :sm="12">
-                <el-form-item label="轮询次数"><el-input-number v-model="config.heroSMSPollAttempts" :min="1" class="w-full" /></el-form-item>
+                <el-form-item label="轮询次数"><el-input-number v-model="config[smsPollAttemptsConfigKey]" :min="1" class="w-full" /></el-form-item>
               </el-col>
             </el-row>
-            <el-form-item label="轮询间隔 ms"><el-input-number v-model="config.heroSMSPollIntervalMs" :min="1000" class="w-full" /></el-form-item>
+            <el-form-item label="轮询间隔 ms"><el-input-number v-model="config[smsPollIntervalConfigKey]" :min="1000" class="w-full" /></el-form-item>
             <div class="rounded-lg border border-[var(--el-border-color-light)]">
               <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--el-border-color-light)] px-3 py-2">
                 <div>
                   <div class="text-sm font-medium text-[var(--el-text-color-primary)]">当前价格与号码数量</div>
-                  <div class="text-xs text-[var(--el-text-color-secondary)]">来自 HeroSMS getPrices，按国家和服务返回。</div>
+                  <div class="text-xs text-[var(--el-text-color-secondary)]">来自 {{ smsProviderLabel }} getPrices，按国家和服务返回。</div>
                 </div>
                 <el-button :icon="Refresh" :loading="loadingHeroPrices" size="small" @click="loadHeroPrices">刷新价格</el-button>
               </div>
@@ -409,7 +421,7 @@ onMounted(load);
                 </el-table-column>
               </el-table>
               <div v-else class="px-3 py-4 text-sm text-amber-600">
-                {{ heroPriceError || (config.heroSMSCountry ? "价格接口未返回" : "请选择国家后查询价格") }}
+                {{ heroPriceError || (config[smsCountryConfigKey] ? "价格接口未返回" : "请选择国家后查询价格") }}
               </div>
             </div>
             <el-alert

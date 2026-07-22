@@ -86,13 +86,31 @@ interface SingleRegistrationResult {
 }
 
 function createBroker() {
+  if (appConfig.smsProvider === "grizzly-sms") {
+    return appConfig.grizzlySMSApiKey ? createSMSBroker({
+      provider: "grizzly-sms",
+      apiKey: appConfig.grizzlySMSApiKey,
+      pollAttempts: appConfig.grizzlySMSPollAttempts,
+      pollIntervalMs: appConfig.grizzlySMSPollIntervalMs,
+      maxPrice: appConfig.grizzlySMSMaxPrice,
+      country: appConfig.grizzlySMSCountry,
+    }) : undefined;
+  }
+
   return appConfig.heroSMSApiKey ? createSMSBroker({
+    provider: "hero-sms",
     apiKey: appConfig.heroSMSApiKey,
     pollAttempts: appConfig.heroSMSPollAttempts,
     pollIntervalMs: appConfig.heroSMSPollIntervalMs,
     maxPrice: appConfig.heroSMSMaxPrice,
     country: appConfig.heroSMSCountry,
   }) : undefined;
+}
+
+function isSelectedSmsProviderConfigured(): boolean {
+  return appConfig.smsProvider === "grizzly-sms"
+    ? Boolean(appConfig.grizzlySMSApiKey)
+    : Boolean(appConfig.heroSMSApiKey);
 }
 
 function isSmsVerificationEnabled(options: RegisterOptions): boolean {
@@ -572,7 +590,7 @@ async function runRegistrationJobInner(options: RegisterOptions): Promise<Regist
   }
   if (sharedBroker && options.jobId) {
     addJobEvent(options.jobId, "info", "已启用 SMS 号码跨轮复用：同一号码会继续 requestAnotherSms 直至达到使用上限");
-  } else if (options.jobId && concurrency > 1 && isSmsVerificationEnabled(options) && appConfig.heroSMSApiKey) {
+  } else if (options.jobId && concurrency > 1 && isSmsVerificationEnabled(options) && isSelectedSmsProviderConfigured()) {
     addJobEvent(options.jobId, "info", "并发注册模式下每轮独立使用 SMS broker，避免多个线程共享同一个号码状态");
   }
   if (appConfig.loopDelayMs > 0 && effectiveRounds > concurrency) {

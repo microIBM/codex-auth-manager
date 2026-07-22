@@ -31,6 +31,7 @@ interface DashboardPayload {
     sub2api: number;
   };
   heroSms: {
+    provider?: string;
     configured: boolean;
     country: number;
   };
@@ -60,6 +61,8 @@ const planLabels: Record<PlanGroup["plan"], string> = {
   pro: "Pro",
   team: "Team",
 };
+
+const smsProviderLabel = computed(() => data.value?.heroSms.provider === "grizzly-sms" ? "GrizzlySMS" : "HeroSMS");
 
 async function load() {
   loading.value = true;
@@ -200,7 +203,7 @@ watch(pageSize, () => {
           <div class="flex flex-wrap gap-2">
             <el-tag :type="(data?.services.cpa ?? 0) > 0 ? 'success' : 'warning'">CPA {{ data?.services.cpa ?? 0 }}</el-tag>
             <el-tag :type="(data?.services.sub2api ?? 0) > 0 ? 'success' : 'warning'">Sub2API {{ data?.services.sub2api ?? 0 }}</el-tag>
-            <el-tag :type="data?.heroSms.configured ? 'success' : 'info'">HeroSMS {{ data?.heroSms.configured ? `国家 ${data.heroSms.country}` : "未配置" }}</el-tag>
+            <el-tag :type="data?.heroSms.configured ? 'success' : 'info'">{{ smsProviderLabel }} {{ data?.heroSms.configured ? `国家 ${data.heroSms.country}` : "未配置" }}</el-tag>
           </div>
           <el-button class="mt-4 w-full" @click="router.push('/services')">管理推送服务</el-button>
         </el-card>

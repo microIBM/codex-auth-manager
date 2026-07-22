@@ -399,7 +399,7 @@ onBeforeUnmount(() => source?.close());
               inactive-text="关闭短信验证码"
             />
             <div v-if="!form.enableSmsVerification" class="mt-2 text-sm text-amber-600">
-              关闭后本次任务不会调用 HeroSMS；如果 OpenAI 要求手机验证，任务会直接失败。
+              关闭后本次任务不会调用短信平台；如果 OpenAI 要求手机验证，任务会直接失败。
             </div>
           </el-form-item>
 

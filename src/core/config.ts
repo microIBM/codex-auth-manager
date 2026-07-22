@@ -3,6 +3,7 @@ import {decryptSecretSync, encryptSecretSync} from "../backend/crypto.js";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
 export type HotmailMode = "graph" | "xiongmaodian";
+export type SmsProviderName = "hero-sms" | "grizzly-sms";
 
 interface AppConfigInput {
   provider?: unknown;
@@ -20,11 +21,17 @@ interface AppConfigInput {
   cloudflareApiKey?: unknown;
   defaultProxyUrl?: unknown;
   hotmailMode?: unknown;
+  smsProvider?: unknown;
   heroSMSApiKey?: unknown;
   heroSMSCountry?: unknown;
   heroSMSMaxPrice?: unknown;
   heroSMSPollAttempts?: unknown;
   heroSMSPollIntervalMs?: unknown;
+  grizzlySMSApiKey?: unknown;
+  grizzlySMSCountry?: unknown;
+  grizzlySMSMaxPrice?: unknown;
+  grizzlySMSPollAttempts?: unknown;
+  grizzlySMSPollIntervalMs?: unknown;
   cliproxyApiAutoUploadAuth?: unknown;
   cliproxyApiBaseUrl?: unknown;
   cliproxyApiManagementKey?: unknown;
@@ -61,11 +68,17 @@ export interface AppConfig {
   cloudflareApiKey: string;
   defaultProxyUrl: string;
   hotmailMode: HotmailMode;
+  smsProvider: SmsProviderName;
   heroSMSApiKey?: string;
   heroSMSCountry: number;
   heroSMSMaxPrice: number;
   heroSMSPollAttempts: number;
   heroSMSPollIntervalMs: number;
+  grizzlySMSApiKey?: string;
+  grizzlySMSCountry: number;
+  grizzlySMSMaxPrice: number;
+  grizzlySMSPollAttempts: number;
+  grizzlySMSPollIntervalMs: number;
   cliproxyApiAutoUploadAuth: boolean;
   cliproxyApiBaseUrl: string;
   cliproxyApiManagementKey: string;
@@ -102,11 +115,17 @@ export const DEFAULT_CONFIG: AppConfig = {
   cloudflareApiKey: "",
   defaultProxyUrl: "http://127.0.0.1:10808",
   hotmailMode: "graph",
+  smsProvider: "hero-sms",
   heroSMSApiKey: "",
   heroSMSCountry: 7,
   heroSMSMaxPrice: 0.1,
   heroSMSPollAttempts: 10,
   heroSMSPollIntervalMs: 3000,
+  grizzlySMSApiKey: "",
+  grizzlySMSCountry: 7,
+  grizzlySMSMaxPrice: 0.1,
+  grizzlySMSPollAttempts: 10,
+  grizzlySMSPollIntervalMs: 3000,
   cliproxyApiAutoUploadAuth: false,
   cliproxyApiBaseUrl: "http://localhost:8317",
   cliproxyApiManagementKey: "",
@@ -134,6 +153,7 @@ export const SECRET_CONFIG_KEYS = new Set<keyof AppConfig>([
   "2925Password",
   "cloudflareApiKey",
   "heroSMSApiKey",
+  "grizzlySMSApiKey",
   "cliproxyApiManagementKey",
   "sub2apiAdminApiKey",
   "webAccessPassword",
@@ -227,6 +247,13 @@ function normalizeHotmailMode(value: unknown): HotmailMode {
   return DEFAULT_CONFIG.hotmailMode;
 }
 
+function normalizeSmsProvider(value: unknown): SmsProviderName {
+  if (value === "hero-sms" || value === "grizzly-sms") {
+    return value;
+  }
+  return DEFAULT_CONFIG.smsProvider;
+}
+
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
     return value;
@@ -270,11 +297,20 @@ function normalizeConfig(parsed: AppConfigInput): AppConfig {
     cloudflareApiKey: normalizeString(parsed.cloudflareApiKey, DEFAULT_CONFIG.cloudflareApiKey),
     defaultProxyUrl: normalizeString(parsed.defaultProxyUrl, DEFAULT_CONFIG.defaultProxyUrl),
     hotmailMode: normalizeHotmailMode(parsed.hotmailMode),
+    smsProvider: normalizeSmsProvider(parsed.smsProvider),
     heroSMSApiKey: normalizeString(parsed.heroSMSApiKey, DEFAULT_CONFIG.heroSMSApiKey ?? ""),
     heroSMSCountry: normalizeNumber(parsed.heroSMSCountry, DEFAULT_CONFIG.heroSMSCountry),
     heroSMSMaxPrice: normalizeNumber(parsed.heroSMSMaxPrice, DEFAULT_CONFIG.heroSMSMaxPrice),
     heroSMSPollAttempts: normalizeNumber(parsed.heroSMSPollAttempts, DEFAULT_CONFIG.heroSMSPollAttempts),
     heroSMSPollIntervalMs: normalizeNumber(parsed.heroSMSPollIntervalMs, DEFAULT_CONFIG.heroSMSPollIntervalMs),
+    grizzlySMSApiKey: normalizeString(parsed.grizzlySMSApiKey, DEFAULT_CONFIG.grizzlySMSApiKey ?? ""),
+    grizzlySMSCountry: normalizeNumber(parsed.grizzlySMSCountry, DEFAULT_CONFIG.grizzlySMSCountry),
+    grizzlySMSMaxPrice: normalizeNumber(parsed.grizzlySMSMaxPrice, DEFAULT_CONFIG.grizzlySMSMaxPrice),
+    grizzlySMSPollAttempts: normalizeNumber(parsed.grizzlySMSPollAttempts, DEFAULT_CONFIG.grizzlySMSPollAttempts),
+    grizzlySMSPollIntervalMs: normalizeNumber(
+      parsed.grizzlySMSPollIntervalMs,
+      DEFAULT_CONFIG.grizzlySMSPollIntervalMs,
+    ),
     cliproxyApiAutoUploadAuth: normalizeBoolean(
       parsed.cliproxyApiAutoUploadAuth,
       DEFAULT_CONFIG.cliproxyApiAutoUploadAuth,

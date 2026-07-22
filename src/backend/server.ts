@@ -60,6 +60,7 @@ import {
   updateMailSource,
 } from "./mailbox-service.js";
 import {getHeroSmsBalance, getHeroSmsCountries, getHeroSmsPrices} from "./hero-sms-service.js";
+import {getGrizzlySmsBalance, getGrizzlySmsCountries, getGrizzlySmsPrices} from "./grizzly-sms-service.js";
 import {testProxyConnection} from "./proxy-test-service.js";
 import {
   createIntegrationService,
@@ -169,8 +170,11 @@ app.get("/api/dashboard", async () => {
       sub2api: services.find((item) => item.kind === "sub2api")?.count ?? 0,
     },
     heroSms: {
-      configured: Boolean(appConfig.heroSMSApiKey),
-      country: appConfig.heroSMSCountry,
+      provider: appConfig.smsProvider,
+      configured: appConfig.smsProvider === "grizzly-sms"
+        ? Boolean(appConfig.grizzlySMSApiKey)
+        : Boolean(appConfig.heroSMSApiKey),
+      country: appConfig.smsProvider === "grizzly-sms" ? appConfig.grizzlySMSCountry : appConfig.heroSMSCountry,
     },
   };
 });
@@ -445,6 +449,12 @@ app.get("/api/hero-sms/balance", async () => getHeroSmsBalance());
 app.get("/api/hero-sms/prices", async (request) => {
   const query = (request.query as {country?: string; service?: string} | undefined) ?? {};
   return getHeroSmsPrices(Number(query.country ?? 0), query.service ?? "dr");
+});
+app.get("/api/grizzly-sms/countries", async () => getGrizzlySmsCountries());
+app.get("/api/grizzly-sms/balance", async () => getGrizzlySmsBalance());
+app.get("/api/grizzly-sms/prices", async (request) => {
+  const query = (request.query as {country?: string; service?: string} | undefined) ?? {};
+  return getGrizzlySmsPrices(Number(query.country ?? 0), query.service ?? "dr");
 });
 
 app.get("/api/jobs", async () => ({jobs: listJobs()}));

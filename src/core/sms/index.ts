@@ -1,24 +1,28 @@
 import { ActivationBroker } from "./activation-broker.js";
 import { createHeroSmsProvider } from "./heroSMS.js";
+import { createGrizzlySmsProvider, type GrizzlySmsProviderConfig } from "./grizzlySMS.js";
+import type { SmsProvider } from "./provider.js";
 
-type HeroSMSBrokerOption = {
+export type SmsProviderKind = "hero-sms" | "grizzly-sms";
+
+type SMSBrokerOption = {
+  provider?: SmsProviderKind;
   apiKey: string;
-  country: number;
+  country: number | string;
   maxPrice: number;
   pollAttempts: number;
   pollIntervalMs: number;
+  fetchImpl?: GrizzlySmsProviderConfig["fetchImpl"];
 }
 
-export const createSMSBroker = (option: HeroSMSBrokerOption) => {
-  return new ActivationBroker(
-    createHeroSmsProvider({
+export const createSmsProvider = (option: SMSBrokerOption): SmsProvider => {
+  if (option.provider === "grizzly-sms") {
+    return createGrizzlySmsProvider({
       apiKey: option.apiKey,
       defaultRequestOptions: {
-        // openai
         service: "dr",
         country: option.country,
         maxPrice: option.maxPrice,
-        fixedPrice: true,
       },
       defaultWaitForCodeOptions: {
         markReady: false,
@@ -26,6 +30,28 @@ export const createSMSBroker = (option: HeroSMSBrokerOption) => {
         pollAttempts: option.pollAttempts,
         pollIntervalMs: option.pollIntervalMs,
       },
-    }),
-  );
+      fetchImpl: option.fetchImpl,
+    });
+  }
+
+  return createHeroSmsProvider({
+    apiKey: option.apiKey,
+    defaultRequestOptions: {
+      // openai
+      service: "dr",
+      country: Number(option.country),
+      maxPrice: option.maxPrice,
+      fixedPrice: true,
+    },
+    defaultWaitForCodeOptions: {
+      markReady: false,
+      completeOnCode: false,
+      pollAttempts: option.pollAttempts,
+      pollIntervalMs: option.pollIntervalMs,
+    },
+  });
+};
+
+export const createSMSBroker = (option: SMSBrokerOption) => {
+  return new ActivationBroker(createSmsProvider(option));
 };
