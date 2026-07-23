@@ -62,7 +62,12 @@ const planLabels: Record<PlanGroup["plan"], string> = {
   team: "Team",
 };
 
-const smsProviderLabel = computed(() => data.value?.heroSms.provider === "grizzly-sms" ? "GrizzlySMS" : "HeroSMS");
+const smsProviderLabels: Record<string, string> = {
+  "hero-sms": "HeroSMS",
+  "grizzly-sms": "GrizzlySMS",
+  smsbower: "SMSBower",
+};
+const smsProviderLabel = computed(() => smsProviderLabels[data.value?.heroSms.provider ?? "hero-sms"] ?? "HeroSMS");
 
 async function load() {
   loading.value = true;

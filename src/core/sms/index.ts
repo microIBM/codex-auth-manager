@@ -1,9 +1,10 @@
 import { ActivationBroker } from "./activation-broker.js";
 import { createHeroSmsProvider } from "./heroSMS.js";
 import { createGrizzlySmsProvider, type GrizzlySmsProviderConfig } from "./grizzlySMS.js";
+import { createSmsBowerProvider } from "./smsBower.js";
 import type { SmsProvider } from "./provider.js";
 
-export type SmsProviderKind = "hero-sms" | "grizzly-sms";
+export type SmsProviderKind = "hero-sms" | "grizzly-sms" | "smsbower";
 
 type SMSBrokerOption = {
   provider?: SmsProviderKind;
@@ -18,6 +19,24 @@ type SMSBrokerOption = {
 export const createSmsProvider = (option: SMSBrokerOption): SmsProvider => {
   if (option.provider === "grizzly-sms") {
     return createGrizzlySmsProvider({
+      apiKey: option.apiKey,
+      defaultRequestOptions: {
+        service: "dr",
+        country: option.country,
+        maxPrice: option.maxPrice,
+      },
+      defaultWaitForCodeOptions: {
+        markReady: false,
+        completeOnCode: false,
+        pollAttempts: option.pollAttempts,
+        pollIntervalMs: option.pollIntervalMs,
+      },
+      fetchImpl: option.fetchImpl,
+    });
+  }
+
+  if (option.provider === "smsbower") {
+    return createSmsBowerProvider({
       apiKey: option.apiKey,
       defaultRequestOptions: {
         service: "dr",

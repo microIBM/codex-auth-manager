@@ -61,6 +61,7 @@ import {
 } from "./mailbox-service.js";
 import {getHeroSmsBalance, getHeroSmsCountries, getHeroSmsPrices} from "./hero-sms-service.js";
 import {getGrizzlySmsBalance, getGrizzlySmsCountries, getGrizzlySmsPrices} from "./grizzly-sms-service.js";
+import {getSmsBowerBalance, getSmsBowerCountries, getSmsBowerPrices} from "./smsbower-service.js";
 import {testProxyConnection} from "./proxy-test-service.js";
 import {
   createIntegrationService,
@@ -111,6 +112,26 @@ app.setErrorHandler((error, _request, reply) => {
   const message = error instanceof Error ? error.message : String(error);
   reply.code(500).send({error: message});
 });
+
+function getSelectedSmsProviderConfigured(): boolean {
+  if (appConfig.smsProvider === "grizzly-sms") {
+    return Boolean(appConfig.grizzlySMSApiKey);
+  }
+  if (appConfig.smsProvider === "smsbower") {
+    return Boolean(appConfig.smsBowerApiKey);
+  }
+  return Boolean(appConfig.heroSMSApiKey);
+}
+
+function getSelectedSmsProviderCountry(): number {
+  if (appConfig.smsProvider === "grizzly-sms") {
+    return appConfig.grizzlySMSCountry;
+  }
+  if (appConfig.smsProvider === "smsbower") {
+    return appConfig.smsBowerCountry;
+  }
+  return appConfig.heroSMSCountry;
+}
 
 app.addHook("preHandler", async (request, reply) => {
   const url = request.raw.url ?? "";
@@ -171,10 +192,8 @@ app.get("/api/dashboard", async () => {
     },
     heroSms: {
       provider: appConfig.smsProvider,
-      configured: appConfig.smsProvider === "grizzly-sms"
-        ? Boolean(appConfig.grizzlySMSApiKey)
-        : Boolean(appConfig.heroSMSApiKey),
-      country: appConfig.smsProvider === "grizzly-sms" ? appConfig.grizzlySMSCountry : appConfig.heroSMSCountry,
+      configured: getSelectedSmsProviderConfigured(),
+      country: getSelectedSmsProviderCountry(),
     },
   };
 });
@@ -455,6 +474,12 @@ app.get("/api/grizzly-sms/balance", async () => getGrizzlySmsBalance());
 app.get("/api/grizzly-sms/prices", async (request) => {
   const query = (request.query as {country?: string; service?: string} | undefined) ?? {};
   return getGrizzlySmsPrices(Number(query.country ?? 0), query.service ?? "dr");
+});
+app.get("/api/smsbower/countries", async () => getSmsBowerCountries());
+app.get("/api/smsbower/balance", async () => getSmsBowerBalance());
+app.get("/api/smsbower/prices", async (request) => {
+  const query = (request.query as {country?: string; service?: string} | undefined) ?? {};
+  return getSmsBowerPrices(Number(query.country ?? 0), query.service ?? "dr");
 });
 
 app.get("/api/jobs", async () => ({jobs: listJobs()}));

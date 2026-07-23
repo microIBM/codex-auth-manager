@@ -26,6 +26,7 @@ export type GrizzlySmsActivationStatusCode = 1 | 3 | 6 | 8;
 export interface GrizzlySmsProviderConfig {
   apiKey: string;
   baseUrl?: string;
+  providerName?: string;
   pollAttempts?: number;
   pollIntervalMs?: number;
   defaultRequestOptions?: GrizzlySmsNumberRequestOptions;
@@ -93,17 +94,21 @@ export class GrizzlySmsApiError extends Error {
   }
 }
 
+function getProviderName(config: GrizzlySmsProviderConfig): string {
+  return String(config.providerName ?? "GrizzlySMS").trim() || "GrizzlySMS";
+}
+
 function ensureApiKeyConfigured(config: GrizzlySmsProviderConfig): string {
   const apiKey = String(config.apiKey ?? "").trim();
   if (!apiKey) {
-    throw new Error("GrizzlySMS apiKey 未配置");
+    throw new Error(`${getProviderName(config)} apiKey 未配置`);
   }
   return apiKey;
 }
 
 function ensureDefaultRequestOptionsConfigured(config: GrizzlySmsProviderConfig): GrizzlySmsNumberRequestOptions {
   if (!config.defaultRequestOptions) {
-    throw new Error("GrizzlySMS defaultRequestOptions 未配置，无法通过通用 SmsProvider 接口申请 activation");
+    throw new Error(`${getProviderName(config)} defaultRequestOptions 未配置，无法通过通用 SmsProvider 接口申请 activation`);
   }
   return config.defaultRequestOptions;
 }
@@ -111,7 +116,7 @@ function ensureDefaultRequestOptionsConfigured(config: GrizzlySmsProviderConfig)
 function normalizeBaseUrl(config: GrizzlySmsProviderConfig): string {
   const baseUrl = String(config.baseUrl ?? GRIZZLY_SMS_DEFAULT_BASE_URL).trim();
   if (!baseUrl) {
-    throw new Error("GrizzlySMS baseUrl 未配置");
+    throw new Error(`${getProviderName(config)} baseUrl 未配置`);
   }
   return baseUrl;
 }
@@ -174,10 +179,15 @@ function isFailureString(value: string): boolean {
   );
 }
 
-function createApiError(action: string, payload: unknown, httpStatus?: number): GrizzlySmsApiError {
+function createApiError(
+  config: GrizzlySmsProviderConfig,
+  action: string,
+  payload: unknown,
+  httpStatus?: number,
+): GrizzlySmsApiError {
   return new GrizzlySmsApiError(
     action,
-    `GrizzlySMS ${action} 请求失败: ${formatPayload(payload)}`,
+    `${getProviderName(config)} ${action} 请求失败: ${formatPayload(payload)}`,
     {httpStatus, payload},
   );
 }
@@ -202,10 +212,10 @@ async function requestGrizzlySmsApi(
   });
   const payload = (await response.text()).trim();
   if (!response.ok) {
-    throw createApiError(action, payload, response.status);
+    throw createApiError(config, action, payload, response.status);
   }
   if (isFailureString(payload)) {
-    throw createApiError(action, payload, response.status);
+    throw createApiError(config, action, payload, response.status);
   }
   return payload;
 }
@@ -213,7 +223,7 @@ async function requestGrizzlySmsApi(
 function ensureServiceConfigured(options: GrizzlySmsNumberRequestOptions): string {
   const service = String(options.service ?? "").trim();
   if (!service) {
-    throw new Error("GrizzlySMS service 未配置");
+    throw new Error("短信服务 service 未配置");
   }
   return service;
 }
@@ -221,20 +231,20 @@ function ensureServiceConfigured(options: GrizzlySmsNumberRequestOptions): strin
 function normalizeActivationId(activationId: string | number): string {
   const normalized = String(activationId ?? "").trim();
   if (!normalized) {
-    throw new Error("GrizzlySMS activationId 不能为空");
+    throw new Error("短信服务 activationId 不能为空");
   }
   return normalized;
 }
 
-function normalizeActivation(payload: string): GrizzlySmsActivation {
+function normalizeActivation(config: GrizzlySmsProviderConfig, payload: string): GrizzlySmsActivation {
   const parts = payload.split(":");
   if (parts.length < 3 || parts[0] !== "ACCESS_NUMBER") {
-    throw new Error(`GrizzlySMS getNumber 返回格式异常: ${formatPayload(payload)}`);
+    throw new Error(`${getProviderName(config)} getNumber 返回格式异常: ${formatPayload(payload)}`);
   }
   const activationId = parts[1]?.trim() ?? "";
   const phoneNumber = parts.slice(2).join(":").trim();
   if (!activationId || !phoneNumber) {
-    throw new Error(`GrizzlySMS getNumber 返回缺少 activationId 或 phoneNumber: ${formatPayload(payload)}`);
+    throw new Error(`${getProviderName(config)} getNumber 返回缺少 activationId 或 phoneNumber: ${formatPayload(payload)}`);
   }
   return {
     activationId,
@@ -298,7 +308,7 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
         providerIds: options.providerIds,
         exceptProviderIds: options.exceptProviderIds,
       });
-      return normalizeActivation(payload);
+      return normalizeActivation(config, payload);
     },
 
     async markActivationReady(activationId: string | number): Promise<string> {
@@ -357,7 +367,7 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
       }
 
       for (let attempt = 1; attempt <= pollAttempts; attempt += 1) {
-        console.log(`[pollSMSCode]: GrizzlySMS attempt:${attempt}/${pollAttempts}`);
+        console.log(`[pollSMSCode]: ${getProviderName(config)} attempt:${attempt}/${pollAttempts}`);
         const status = await provider.getActivationStatus(normalizedActivationId);
         lastStatus = status;
         const verification = extractCodeFromStatus(status);
@@ -369,7 +379,7 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
         }
 
         if (status === "STATUS_CANCEL") {
-          throw new Error(`GrizzlySMS 激活已取消: activationId=${normalizedActivationId}`);
+          throw new Error(`${getProviderName(config)} 激活已取消: activationId=${normalizedActivationId}`);
         }
 
         if (attempt < pollAttempts) {
@@ -378,7 +388,7 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
       }
 
       throw new Error(
-        `GrizzlySMS 长时间未收到验证码: activationId=${normalizedActivationId} lastStatus=${formatPayload(lastStatus)}`,
+        `${getProviderName(config)} 长时间未收到验证码: activationId=${normalizedActivationId} lastStatus=${formatPayload(lastStatus)}`,
       );
     },
   };

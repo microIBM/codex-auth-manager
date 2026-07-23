@@ -3,6 +3,12 @@ import {appConfig} from "../core/config.js";
 
 const GRIZZLY_SMS_DEFAULT_BASE_URL = "https://api.grizzlysms.com/stubs/handler_api.php";
 
+export interface HandlerApiSmsServiceConfig {
+  providerName: string;
+  baseUrl: string;
+  getApiKey: () => string | undefined;
+}
+
 export interface GrizzlySmsCountryItem {
   countryId: number;
   countryName: string;
@@ -31,18 +37,28 @@ export interface GrizzlySmsBalance {
   raw: string;
 }
 
+const GRIZZLY_SMS_SERVICE_CONFIG: HandlerApiSmsServiceConfig = {
+  providerName: "GrizzlySMS",
+  baseUrl: GRIZZLY_SMS_DEFAULT_BASE_URL,
+  getApiKey: () => appConfig.grizzlySMSApiKey,
+};
+
 function buildDispatcher() {
   return new Agent({
     connect: {rejectUnauthorized: false},
   });
 }
 
-async function requestGrizzlySms(action: string, query: Record<string, unknown> = {}): Promise<unknown> {
-  const apiKey = String(appConfig.grizzlySMSApiKey ?? "").trim();
+async function requestHandlerApiSms(
+  config: HandlerApiSmsServiceConfig,
+  action: string,
+  query: Record<string, unknown> = {},
+): Promise<unknown> {
+  const apiKey = String(config.getApiKey() ?? "").trim();
   if (!apiKey) {
-    throw new Error("GrizzlySMS API Key 未配置");
+    throw new Error(`${config.providerName} API Key 未配置`);
   }
-  const url = new URL(GRIZZLY_SMS_DEFAULT_BASE_URL);
+  const url = new URL(config.baseUrl);
   url.searchParams.set("api_key", apiKey);
   url.searchParams.set("action", action);
   for (const [key, value] of Object.entries(query)) {
@@ -61,10 +77,10 @@ async function requestGrizzlySms(action: string, query: Record<string, unknown> 
   const text = (await response.text()).trim();
   const payload = parsePayload(text);
   if (!response.ok) {
-    throw new Error(`GrizzlySMS ${action} HTTP ${response.status}: ${formatPayload(payload)}`);
+    throw new Error(`${config.providerName} ${action} HTTP ${response.status}: ${formatPayload(payload)}`);
   }
   if (typeof payload === "string" && /^(BAD_|NO_|ERROR_|WRONG_|BANNED|SERVICE_UNAVAILABLE_REGION)/i.test(payload)) {
-    throw new Error(`GrizzlySMS ${action}: ${payload}`);
+    throw new Error(`${config.providerName} ${action}: ${payload}`);
   }
   return payload;
 }
@@ -161,8 +177,14 @@ function firstBoolean(...values: unknown[]): boolean | null {
 }
 
 export async function getGrizzlySmsCountries(): Promise<{countries: GrizzlySmsCountryItem[]; error?: string}> {
+  return getHandlerApiSmsCountries(GRIZZLY_SMS_SERVICE_CONFIG);
+}
+
+export async function getHandlerApiSmsCountries(
+  config: HandlerApiSmsServiceConfig,
+): Promise<{countries: GrizzlySmsCountryItem[]; error?: string}> {
   try {
-    const payload = await requestGrizzlySms("getCountries");
+    const payload = await requestHandlerApiSms(config, "getCountries");
     const countries = asArray(payload, "name")
       .map((item) => {
         const record = item as Record<string, unknown>;
@@ -204,8 +226,14 @@ export async function getGrizzlySmsCountries(): Promise<{countries: GrizzlySmsCo
 }
 
 export async function getGrizzlySmsBalance(): Promise<{balance: GrizzlySmsBalance | null; error?: string}> {
+  return getHandlerApiSmsBalance(GRIZZLY_SMS_SERVICE_CONFIG);
+}
+
+export async function getHandlerApiSmsBalance(
+  config: HandlerApiSmsServiceConfig,
+): Promise<{balance: GrizzlySmsBalance | null; error?: string}> {
   try {
-    const payload = await requestGrizzlySms("getBalance");
+    const payload = await requestHandlerApiSms(config, "getBalance");
     return {balance: normalizeBalance(payload)};
   } catch (error) {
     return {balance: null, error: error instanceof Error ? error.message : String(error)};
@@ -213,8 +241,16 @@ export async function getGrizzlySmsBalance(): Promise<{balance: GrizzlySmsBalanc
 }
 
 export async function getGrizzlySmsPrices(country: number, service = "dr"): Promise<{prices: GrizzlySmsPriceItem[]; error?: string}> {
+  return getHandlerApiSmsPrices(GRIZZLY_SMS_SERVICE_CONFIG, country, service);
+}
+
+export async function getHandlerApiSmsPrices(
+  config: HandlerApiSmsServiceConfig,
+  country: number,
+  service = "dr",
+): Promise<{prices: GrizzlySmsPriceItem[]; error?: string}> {
   try {
-    const payload = await requestGrizzlySms("getPrices", {country, service});
+    const payload = await requestHandlerApiSms(config, "getPrices", {country, service});
     const prices = normalizePrices(payload, country, service);
     return {prices};
   } catch (error) {

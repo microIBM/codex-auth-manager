@@ -3,7 +3,7 @@ import {decryptSecretSync, encryptSecretSync} from "../backend/crypto.js";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
 export type HotmailMode = "graph" | "xiongmaodian";
-export type SmsProviderName = "hero-sms" | "grizzly-sms";
+export type SmsProviderName = "hero-sms" | "grizzly-sms" | "smsbower";
 
 interface AppConfigInput {
   provider?: unknown;
@@ -32,6 +32,11 @@ interface AppConfigInput {
   grizzlySMSMaxPrice?: unknown;
   grizzlySMSPollAttempts?: unknown;
   grizzlySMSPollIntervalMs?: unknown;
+  smsBowerApiKey?: unknown;
+  smsBowerCountry?: unknown;
+  smsBowerMaxPrice?: unknown;
+  smsBowerPollAttempts?: unknown;
+  smsBowerPollIntervalMs?: unknown;
   cliproxyApiAutoUploadAuth?: unknown;
   cliproxyApiBaseUrl?: unknown;
   cliproxyApiManagementKey?: unknown;
@@ -79,6 +84,11 @@ export interface AppConfig {
   grizzlySMSMaxPrice: number;
   grizzlySMSPollAttempts: number;
   grizzlySMSPollIntervalMs: number;
+  smsBowerApiKey?: string;
+  smsBowerCountry: number;
+  smsBowerMaxPrice: number;
+  smsBowerPollAttempts: number;
+  smsBowerPollIntervalMs: number;
   cliproxyApiAutoUploadAuth: boolean;
   cliproxyApiBaseUrl: string;
   cliproxyApiManagementKey: string;
@@ -126,6 +136,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   grizzlySMSMaxPrice: 0.1,
   grizzlySMSPollAttempts: 10,
   grizzlySMSPollIntervalMs: 3000,
+  smsBowerApiKey: "",
+  smsBowerCountry: 7,
+  smsBowerMaxPrice: 0.1,
+  smsBowerPollAttempts: 10,
+  smsBowerPollIntervalMs: 3000,
   cliproxyApiAutoUploadAuth: false,
   cliproxyApiBaseUrl: "http://localhost:8317",
   cliproxyApiManagementKey: "",
@@ -154,6 +169,7 @@ export const SECRET_CONFIG_KEYS = new Set<keyof AppConfig>([
   "cloudflareApiKey",
   "heroSMSApiKey",
   "grizzlySMSApiKey",
+  "smsBowerApiKey",
   "cliproxyApiManagementKey",
   "sub2apiAdminApiKey",
   "webAccessPassword",
@@ -248,7 +264,7 @@ function normalizeHotmailMode(value: unknown): HotmailMode {
 }
 
 function normalizeSmsProvider(value: unknown): SmsProviderName {
-  if (value === "hero-sms" || value === "grizzly-sms") {
+  if (value === "hero-sms" || value === "grizzly-sms" || value === "smsbower") {
     return value;
   }
   return DEFAULT_CONFIG.smsProvider;
@@ -310,6 +326,14 @@ function normalizeConfig(parsed: AppConfigInput): AppConfig {
     grizzlySMSPollIntervalMs: normalizeNumber(
       parsed.grizzlySMSPollIntervalMs,
       DEFAULT_CONFIG.grizzlySMSPollIntervalMs,
+    ),
+    smsBowerApiKey: normalizeString(parsed.smsBowerApiKey, DEFAULT_CONFIG.smsBowerApiKey ?? ""),
+    smsBowerCountry: normalizeNumber(parsed.smsBowerCountry, DEFAULT_CONFIG.smsBowerCountry),
+    smsBowerMaxPrice: normalizeNumber(parsed.smsBowerMaxPrice, DEFAULT_CONFIG.smsBowerMaxPrice),
+    smsBowerPollAttempts: normalizeNumber(parsed.smsBowerPollAttempts, DEFAULT_CONFIG.smsBowerPollAttempts),
+    smsBowerPollIntervalMs: normalizeNumber(
+      parsed.smsBowerPollIntervalMs,
+      DEFAULT_CONFIG.smsBowerPollIntervalMs,
     ),
     cliproxyApiAutoUploadAuth: normalizeBoolean(
       parsed.cliproxyApiAutoUploadAuth,

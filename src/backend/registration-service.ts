@@ -96,6 +96,16 @@ function createBroker() {
       country: appConfig.grizzlySMSCountry,
     }) : undefined;
   }
+  if (appConfig.smsProvider === "smsbower") {
+    return appConfig.smsBowerApiKey ? createSMSBroker({
+      provider: "smsbower",
+      apiKey: appConfig.smsBowerApiKey,
+      pollAttempts: appConfig.smsBowerPollAttempts,
+      pollIntervalMs: appConfig.smsBowerPollIntervalMs,
+      maxPrice: appConfig.smsBowerMaxPrice,
+      country: appConfig.smsBowerCountry,
+    }) : undefined;
+  }
 
   return appConfig.heroSMSApiKey ? createSMSBroker({
     provider: "hero-sms",
@@ -108,9 +118,13 @@ function createBroker() {
 }
 
 function isSelectedSmsProviderConfigured(): boolean {
-  return appConfig.smsProvider === "grizzly-sms"
-    ? Boolean(appConfig.grizzlySMSApiKey)
-    : Boolean(appConfig.heroSMSApiKey);
+  if (appConfig.smsProvider === "grizzly-sms") {
+    return Boolean(appConfig.grizzlySMSApiKey);
+  }
+  if (appConfig.smsProvider === "smsbower") {
+    return Boolean(appConfig.smsBowerApiKey);
+  }
+  return Boolean(appConfig.heroSMSApiKey);
 }
 
 function isSmsVerificationEnabled(options: RegisterOptions): boolean {

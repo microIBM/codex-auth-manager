@@ -21,6 +21,7 @@ let heroServiceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 const smsProviderOptions = [
   {label: "HeroSMS", value: "hero-sms"},
   {label: "GrizzlySMS", value: "grizzly-sms"},
+  {label: "SMSBower", value: "smsbower"},
 ];
 const testingProxy = ref(false);
 const proxyTestResult = ref<{
@@ -47,6 +48,7 @@ const secretKeys = [
   "cloudflareApiKey",
   "heroSMSApiKey",
   "grizzlySMSApiKey",
+  "smsBowerApiKey",
   "webAccessPassword",
 ];
 
@@ -70,15 +72,49 @@ const legacyPushConfigKeys = new Set([
 ]);
 
 const selectedHeroPrice = computed(() => heroPrices.value[0]);
-const selectedSmsProvider = computed(() => config.smsProvider === "grizzly-sms" ? "grizzly-sms" : "hero-sms");
-const smsProviderLabel = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "GrizzlySMS" : "HeroSMS");
-const smsProviderHomeUrl = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "https://grizzlysms.com/" : "https://hero-sms.com/?ref=964178");
-const smsApiBasePath = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "/api/grizzly-sms" : "/api/hero-sms");
-const smsApiKeyConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSApiKey" : "heroSMSApiKey");
-const smsCountryConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSCountry" : "heroSMSCountry");
-const smsMaxPriceConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSMaxPrice" : "heroSMSMaxPrice");
-const smsPollAttemptsConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSPollAttempts" : "heroSMSPollAttempts");
-const smsPollIntervalConfigKey = computed(() => selectedSmsProvider.value === "grizzly-sms" ? "grizzlySMSPollIntervalMs" : "heroSMSPollIntervalMs");
+const smsProviderMeta = {
+  "hero-sms": {
+    label: "HeroSMS",
+    homeUrl: "https://hero-sms.com/?ref=964178",
+    apiBasePath: "/api/hero-sms",
+    apiKeyConfigKey: "heroSMSApiKey",
+    countryConfigKey: "heroSMSCountry",
+    maxPriceConfigKey: "heroSMSMaxPrice",
+    pollAttemptsConfigKey: "heroSMSPollAttempts",
+    pollIntervalConfigKey: "heroSMSPollIntervalMs",
+  },
+  "grizzly-sms": {
+    label: "GrizzlySMS",
+    homeUrl: "https://grizzlysms.com/",
+    apiBasePath: "/api/grizzly-sms",
+    apiKeyConfigKey: "grizzlySMSApiKey",
+    countryConfigKey: "grizzlySMSCountry",
+    maxPriceConfigKey: "grizzlySMSMaxPrice",
+    pollAttemptsConfigKey: "grizzlySMSPollAttempts",
+    pollIntervalConfigKey: "grizzlySMSPollIntervalMs",
+  },
+  smsbower: {
+    label: "SMSBower",
+    homeUrl: "https://smsbower.app/cn",
+    apiBasePath: "/api/smsbower",
+    apiKeyConfigKey: "smsBowerApiKey",
+    countryConfigKey: "smsBowerCountry",
+    maxPriceConfigKey: "smsBowerMaxPrice",
+    pollAttemptsConfigKey: "smsBowerPollAttempts",
+    pollIntervalConfigKey: "smsBowerPollIntervalMs",
+  },
+} as const;
+type SmsProviderValue = keyof typeof smsProviderMeta;
+const selectedSmsProvider = computed<SmsProviderValue>(() => config.smsProvider in smsProviderMeta ? config.smsProvider as SmsProviderValue : "hero-sms");
+const selectedSmsProviderMeta = computed(() => smsProviderMeta[selectedSmsProvider.value]);
+const smsProviderLabel = computed(() => selectedSmsProviderMeta.value.label);
+const smsProviderHomeUrl = computed(() => selectedSmsProviderMeta.value.homeUrl);
+const smsApiBasePath = computed(() => selectedSmsProviderMeta.value.apiBasePath);
+const smsApiKeyConfigKey = computed(() => selectedSmsProviderMeta.value.apiKeyConfigKey);
+const smsCountryConfigKey = computed(() => selectedSmsProviderMeta.value.countryConfigKey);
+const smsMaxPriceConfigKey = computed(() => selectedSmsProviderMeta.value.maxPriceConfigKey);
+const smsPollAttemptsConfigKey = computed(() => selectedSmsProviderMeta.value.pollAttemptsConfigKey);
+const smsPollIntervalConfigKey = computed(() => selectedSmsProviderMeta.value.pollIntervalConfigKey);
 const selectedHeroCountry = computed(() => heroCountries.value.find((country) => String(country.countryId) === String(config[smsCountryConfigKey.value])) ?? null);
 const heroPriceStatus = computed(() => {
   const price = selectedHeroPrice.value?.price;
@@ -245,7 +281,7 @@ function formatAvailable(value: HeroSmsPrice | null | undefined) {
   return String(value.available);
 }
 
-watch(() => [config.smsProvider, config.heroSMSCountry, config.grizzlySMSCountry], () => {
+watch(() => [config.smsProvider, config.heroSMSCountry, config.grizzlySMSCountry, config.smsBowerCountry], () => {
   void refreshHeroSms();
 });
 
