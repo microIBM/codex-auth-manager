@@ -1,5 +1,6 @@
 # 声明
-本注册机修改自https://github.com/cuteyuchen/codex-auth-manager，感谢cuteyuchen大神的分享。本人在此基础上增加了多线程注册账号，并对接了SMSBower和grizzly sms接码。
+本注册机修改自https://github.com/cuteyuchen/codex-auth-manager。
+感谢cuteyuchen大神的分享。本人在此基础上增加了多线程注册账号，并对接了SMSBower和grizzly sms接码。
 
 # codex-auth-manager
 
