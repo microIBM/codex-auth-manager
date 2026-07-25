@@ -29,6 +29,7 @@ export interface GrizzlySmsPriceItem {
   price: number | null;
   currency: string;
   available: number | null;
+  providerId?: number | null;
 }
 
 export interface GrizzlySmsBalance {
@@ -249,13 +250,20 @@ export async function getHandlerApiSmsPrices(
   country: number,
   service = "dr",
 ): Promise<{prices: GrizzlySmsPriceItem[]; error?: string}> {
-  try {
-    const payload = await requestHandlerApiSms(config, "getPrices", {country, service});
-    const prices = normalizePrices(payload, country, service);
-    return {prices};
-  } catch (error) {
-    return {prices: [], error: error instanceof Error ? error.message : String(error)};
+  let fallbackError = "";
+  for (const action of ["getPricesV3", "getPricesV2", "getPrices"]) {
+    try {
+      const payload = await requestHandlerApiSms(config, action, {country, service});
+      const prices = normalizeHandlerApiSmsPrices(payload, country, service);
+      if (prices.length > 0 || action === "getPrices") {
+        return {prices};
+      }
+      fallbackError = `${config.providerName} ${action}: no prices`;
+    } catch (error) {
+      fallbackError = error instanceof Error ? error.message : String(error);
+    }
   }
+  return {prices: [], error: fallbackError};
 }
 
 function normalizeBalance(payload: unknown): GrizzlySmsBalance {
@@ -283,6 +291,19 @@ function normalizeBalance(payload: unknown): GrizzlySmsBalance {
   };
 }
 
+export function normalizeHandlerApiSmsPrices(payload: unknown, country: number, service: string): GrizzlySmsPriceItem[] {
+  try {
+    const prices = normalizePrices(payload, country, service);
+    return prices.sort((left, right) =>
+      (left.price ?? Number.POSITIVE_INFINITY) - (right.price ?? Number.POSITIVE_INFINITY)
+      || (right.available ?? 0) - (left.available ?? 0)
+      || (left.providerId ?? 0) - (right.providerId ?? 0),
+    );
+  } catch (error) {
+    return [];
+  }
+}
+
 function normalizePrices(payload: unknown, country: number, service: string): GrizzlySmsPriceItem[] {
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     const record = payload as Record<string, unknown>;
@@ -299,13 +320,22 @@ function normalizePrices(payload: unknown, country: number, service: string): Gr
     if (directPrice != null || directAvailable != null) {
       return [{
         countryId: firstNumber(record.country, record.countryId, record.country_id, country) ?? country,
-        countryName: firstString(record.countryName, record.country_name, record.name, country),
+        countryName: firstString(record.countryName, record.country_name, record.name),
         phoneCode: firstString(record.phoneCode, record.phone_code, record.prefix),
         service: firstString(record.service, service),
         price: directPrice,
         currency: firstString(record.currency, record.currencyName),
         available: directAvailable,
+        providerId: firstNumber(record.providerId, record.provider_id),
       }];
+    }
+    const providerRows = normalizeProviderPriceRows(record, country, service);
+    if (providerRows.length > 0) {
+      return providerRows;
+    }
+    const tierRows = normalizePriceTierRows(record, country, service);
+    if (tierRows.length > 0) {
+      return tierRows;
     }
   }
   const items = asArray(payload, "price");
@@ -313,12 +343,74 @@ function normalizePrices(payload: unknown, country: number, service: string): Gr
     const record = item as Record<string, unknown>;
     return {
       countryId: firstNumber(record.country, record.countryId, record.country_id, country) ?? country,
-      countryName: firstString(record.countryName, record.country_name, record.name, country),
+      countryName: firstString(record.countryName, record.country_name, record.name),
       phoneCode: firstString(record.phoneCode, record.phone_code, record.prefix),
       service: firstString(record.service, service),
       price: firstNumber(record.price, record.cost, record.activationCost, record.value),
       currency: firstString(record.currency, record.currencyName),
       available: firstNumber(record.count, record.available, record.quantity, record.physicalCount),
+      providerId: firstNumber(record.providerId, record.provider_id),
     };
   });
+}
+
+function normalizeProviderPriceRows(
+  record: Record<string, unknown>,
+  country: number,
+  service: string,
+): GrizzlySmsPriceItem[] {
+  const rows: Array<GrizzlySmsPriceItem | null> = Object.entries(record)
+    .map(([providerKey, value]) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+      }
+      const item = value as Record<string, unknown>;
+      const price = firstNumber(item.price, item.cost, item.activationCost, item.value);
+      const available = firstNumber(item.count, item.available, item.quantity, item.physicalCount);
+      if (price == null && available == null) {
+        return null;
+      }
+      return {
+        countryId: firstNumber(item.country, item.countryId, item.country_id, country) ?? country,
+        countryName: firstString(item.countryName, item.country_name, item.name),
+        phoneCode: firstString(item.phoneCode, item.phone_code, item.prefix),
+        service: firstString(item.service, service),
+        price,
+        currency: firstString(item.currency, item.currencyName),
+        available,
+        providerId: firstNumber(item.providerId, item.provider_id, providerKey),
+      };
+    });
+  return rows.filter((item): item is GrizzlySmsPriceItem => item !== null);
+}
+
+function normalizePriceTierRows(
+  record: Record<string, unknown>,
+  country: number,
+  service: string,
+): GrizzlySmsPriceItem[] {
+  const rows: Array<GrizzlySmsPriceItem | null> = Object.entries(record)
+    .map(([priceKey, value]) => {
+      const price = firstNumber(priceKey);
+      if (price == null) {
+        return null;
+      }
+      const available = value && typeof value === "object" && !Array.isArray(value)
+        ? firstNumber((value as Record<string, unknown>).count, (value as Record<string, unknown>).available)
+        : firstNumber(value);
+      if (available == null) {
+        return null;
+      }
+      return {
+        countryId: country,
+        countryName: "",
+        phoneCode: "",
+        service,
+        price,
+        currency: "",
+        available,
+        providerId: null,
+      };
+    });
+  return rows.filter((item): item is GrizzlySmsPriceItem => item !== null);
 }

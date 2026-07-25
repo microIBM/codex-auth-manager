@@ -216,6 +216,7 @@ export interface HeroSmsPrice {
   price: number | null;
   currency: string;
   available: number | null;
+  providerId?: number | null;
 }
 
 export interface HeroSmsBalance {

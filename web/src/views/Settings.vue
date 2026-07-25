@@ -72,6 +72,7 @@ const legacyPushConfigKeys = new Set([
 ]);
 
 const selectedHeroPrice = computed(() => heroPrices.value[0]);
+const hasHeroPriceProviders = computed(() => heroPrices.value.some((price) => price.providerId != null));
 const smsProviderMeta = {
   "hero-sms": {
     label: "HeroSMS",
@@ -421,8 +422,8 @@ onMounted(load);
             <div class="rounded-lg border border-[var(--el-border-color-light)]">
               <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--el-border-color-light)] px-3 py-2">
                 <div>
-                  <div class="text-sm font-medium text-[var(--el-text-color-primary)]">当前价格与号码数量</div>
-                  <div class="text-xs text-[var(--el-text-color-secondary)]">来自 {{ smsProviderLabel }} getPrices，按国家和服务返回。</div>
+                  <div class="text-sm font-medium text-[var(--el-text-color-primary)]">完整价格与号码数量</div>
+                  <div class="text-xs text-[var(--el-text-color-secondary)]">来自 {{ smsProviderLabel }} 完整价格接口，按国家、服务和供应商价格档返回。</div>
                 </div>
                 <el-button :icon="Refresh" :loading="loadingHeroPrices" size="small" @click="loadHeroPrices">刷新价格</el-button>
               </div>
@@ -443,6 +444,12 @@ onMounted(load);
                 <el-table-column label="服务" min-width="90">
                   <template #default="{row}">
                     <el-tag size="small" effect="plain">{{ row.service || heroService.trim() || "dr" }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="hasHeroPriceProviders" label="供应商" min-width="90">
+                  <template #default="{row}">
+                    <span v-if="row.providerId != null" class="tabular-nums">{{ row.providerId }}</span>
+                    <span v-else class="text-[var(--el-text-color-secondary)]">-</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="当前价格" min-width="110">

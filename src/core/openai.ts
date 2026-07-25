@@ -33,7 +33,7 @@ import {
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
 import { fetchSentinelToken } from "./sentinel.js";
 import { pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
-import { ISMSActivationBroker } from "./sms/activation-broker.js";
+import type { ActivationLease, ISMSActivationBroker } from "./sms/activation-broker.js";
 
 type FetchLike = typeof fetch;
 
@@ -926,7 +926,15 @@ export class OpenAIClient {
     for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
       this.throwIfCancelled();
       console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从短信平台获取号码`);
-      const lease = await this.smsBroker.getActivation();
+      let lease: ActivationLease;
+      try {
+        lease = await this.smsBroker.getActivation();
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        lastError = err;
+        console.warn(`[SMS ${phoneIdx}/${MAX_PHONES}] 短信平台获取号码失败: ${err.message}`);
+        continue;
+      }
       const phoneNumber = `+${lease.phoneNumber}`;
 
       try {
