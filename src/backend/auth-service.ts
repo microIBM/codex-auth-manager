@@ -1,16 +1,17 @@
-import {cpus} from "node:os";
-import {readdir, readFile} from "node:fs/promises";
+import { cpus } from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import {Buffer} from "node:buffer";
-import {fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit} from "undici";
-import {appConfig} from "../core/config.js";
-import {REAUTH_ELIGIBLE_STATUS_CODES} from "../shared/constants.js";
-import {AUTH_OAUTH_TOKEN_URLS, DEFAULT_CLIENT_ID, DEFAULT_USER_AGENT} from "../core/constants.js";
-import {normalizeEmailAddress} from "../core/email-normalize.js";
-import type {SavedAuthRecord} from "../core/openai.js";
-import {getDb, currentTimestamp, getAuthFileContent, updateAuthFileContent, type AccountRow, type AuthFileRow} from "./db.js";
-import {decryptSecret, encryptSecret} from "./crypto.js";
-import {buildZip, type ZipEntry} from "./zip.js";
+import { Buffer } from "node:buffer";
+import { fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit } from "undici";
+import { appConfig } from "../core/config.js";
+import { REAUTH_ELIGIBLE_STATUS_CODES } from "../shared/constants.js";
+import { AUTH_OAUTH_TOKEN_URLS, DEFAULT_CLIENT_ID, DEFAULT_USER_AGENT } from "../core/constants.js";
+import { buildBrowserHeaders, defaultDeviceProfile, type DeviceProfile } from "../core/device-profile.js";
+import { normalizeEmailAddress } from "../core/email-normalize.js";
+import type { SavedAuthRecord } from "../core/openai.js";
+import { getDb, currentTimestamp, getAuthFileContent, updateAuthFileContent, type AccountRow, type AuthFileRow } from "./db.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
+import { buildZip, type ZipEntry } from "./zip.js";
 import {
   resolvePushServices,
   saveAuthFileJsonObjectToCPAService,
@@ -27,94 +28,113 @@ import {
   updateBindingPushResult,
   type BoundPlatformService,
 } from "./account-platform-binding-service.js";
-import {addJobEvent, createJob, runJob} from "./job-service.js";
+import { addJobEvent, createJob, runJob } from "./job-service.js";
 
 export interface AuthRecord {
-    access_token?: string;
-    account_id?: string;
-    disabled?: boolean;
-    email?: string;
-    expired?: string;
-    expires_at?: string;
-    id_token?: string;
-    last_refresh?: string;
-    refresh_token?: string;
-    type?: string;
-    websockets?: boolean;
+  access_token?: string;
+  account_id?: string;
+  disabled?: boolean;
+  email?: string;
+  expired?: string;
+  expires_at?: string;
+  id_token?: string;
+  last_refresh?: string;
+  refresh_token?: string;
+  type?: string;
+  websockets?: boolean;
+  device_profile?: DeviceProfile | Record<string, unknown>;
 }
 
 interface JwtClaims {
-    email?: string;
-    exp?: number;
-    ["https://api.openai.com/auth"]?: {
-        chatgpt_account_id?: string;
-        chatgpt_plan_type?: string;
-    };
+  email?: string;
+  exp?: number;
+  ["https://api.openai.com/auth"]?: {
+    chatgpt_account_id?: string;
+    chatgpt_plan_type?: string;
+  };
 }
 
 interface ProbeResponse {
-    status: number;
-    body: string;
+  status: number;
+  body: string;
+  requestContext: UsageProbeRequestContext;
+}
+
+interface ProxyDiagnostic {
+  configured: boolean;
+  protocol?: string;
+  host?: string;
+  port?: string;
+}
+
+interface UsageProbeRequestContext {
+  endpoint: string;
+  userAgent: string;
+  acceptLanguage: string;
+  deviceProfileId: string;
+  deviceFamily: string;
+  proxy: ProxyDiagnostic;
+  accountIdPresent: boolean;
 }
 
 interface OAuthTokenResponse {
-    access_token?: string;
-    refresh_token?: string;
-    id_token?: string;
-    expires_in?: number;
+  access_token?: string;
+  refresh_token?: string;
+  id_token?: string;
+  expires_in?: number;
 }
 
 interface UsageWindow {
-    used_percent?: number;
-    reset_after_seconds?: number;
+  used_percent?: number;
+  reset_after_seconds?: number;
 }
 
 interface UsagePayload {
-    plan_type?: string;
-    rate_limit?: {
-        limit_reached?: boolean;
-        primary_window?: UsageWindow;
-        secondary_window?: UsageWindow;
-        daily_window?: UsageWindow;
-        weekly_window?: UsageWindow;
-    };
+  plan_type?: string;
+  rate_limit?: {
+    limit_reached?: boolean;
+    primary_window?: UsageWindow;
+    secondary_window?: UsageWindow;
+    daily_window?: UsageWindow;
+    weekly_window?: UsageWindow;
+  };
 }
 
 export interface AuthSummary {
-    file: string;
-    email: string;
-    plan: string;
-    status: string;
-    ok: boolean;
-    usedPercent: number | null;
-    remainingPercent: number | null;
-    resetAt: string | null;
-    limitReached: boolean | null;
-    expires: string;
-    note: string;
-    rawStatus: number;
-    rawBody: string;
-    movedTo401: boolean;
-    refreshed: boolean;
-    statusCode: string;
-    statusLabel: string;
-    credentialType: "codex_auth" | "access_token_only" | "none";
-    windows: AccountUsageWindow[];
+  file: string;
+  email: string;
+  plan: string;
+  status: string;
+  ok: boolean;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetAt: string | null;
+  limitReached: boolean | null;
+  expires: string;
+  note: string;
+  rawStatus: number;
+  rawBody: string;
+  movedTo401: boolean;
+  refreshed: boolean;
+  statusCode: string;
+  statusLabel: string;
+  credentialType: "codex_auth" | "access_token_only" | "none";
+  windows: AccountUsageWindow[];
 }
 
 export type CredentialSourceKind = "local" | "cpa" | "sub2api";
 
 export interface UpsertAuthOptions {
-    accountId?: number;
-    sourceKind?: CredentialSourceKind;
-    sourceName?: string | null;
-    sourceServiceId?: number | null;
-    sourceRemoteId?: string | null;
-    syncedAt?: string | null;
-    preserveSource?: boolean;
-    preserveAccountMetadata?: boolean;
-    activate?: boolean;
-    contentJson?: string;
+  accountId?: number;
+  sourceKind?: CredentialSourceKind;
+  sourceName?: string | null;
+  sourceServiceId?: number | null;
+  sourceRemoteId?: string | null;
+  syncedAt?: string | null;
+  preserveSource?: boolean;
+  preserveAccountMetadata?: boolean;
+  activate?: boolean;
+  contentJson?: string;
 }
 
 const DEFAULT_AUTH_DIR = path.resolve(process.cwd(), "auth");
@@ -123,6 +143,40 @@ const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 
 function maskPath(filePath: string): string {
   return path.relative(process.cwd(), filePath) || filePath;
+}
+
+function summarizeProxyUrl(value: string | undefined): ProxyDiagnostic {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return { configured: false };
+  }
+  try {
+    const url = new URL(text);
+    return {
+      configured: true,
+      protocol: url.protocol.replace(/:$/, ""),
+      host: url.hostname,
+      port: url.port || undefined,
+    };
+  } catch {
+    return {
+      configured: true,
+      host: text.length > 16 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text,
+    };
+  }
+}
+
+export function buildUsageProbeRequestContext(accountId: string, deviceProfile?: DeviceProfile): UsageProbeRequestContext {
+  const profile = deviceProfile ?? defaultDeviceProfile();
+  return {
+    endpoint: USAGE_URL,
+    userAgent: profile.userAgent,
+    acceptLanguage: profile.acceptLanguage,
+    deviceProfileId: profile.id,
+    deviceFamily: profile.family,
+    proxy: summarizeProxyUrl(appConfig.defaultProxyUrl),
+    accountIdPresent: Boolean(accountId),
+  };
 }
 
 function isExcludedAuthDir(dirPath: string): boolean {
@@ -139,7 +193,7 @@ export async function collectAuthFiles(rootDir = DEFAULT_AUTH_DIR): Promise<stri
     }
     let entries;
     try {
-      entries = await readdir(dirPath, {withFileTypes: true});
+      entries = await readdir(dirPath, { withFileTypes: true });
     } catch {
       return;
     }
@@ -199,27 +253,27 @@ function buildDispatcher(proxyUrl = appConfig.defaultProxyUrl): Dispatcher {
   return proxyUrl
     ? new ProxyAgent({
       uri: proxyUrl,
-      requestTls: {rejectUnauthorized: false},
+      requestTls: { rejectUnauthorized: false },
     })
     : new Agent({
-      connect: {rejectUnauthorized: false},
+      connect: { rejectUnauthorized: false },
     });
 }
 
 function extractMessage(rawBody: string): string {
   const payload = parseJson<Record<string, unknown>>(rawBody);
   const errorObject =
-        payload?.error && typeof payload.error === "object"
-          ? payload.error as Record<string, unknown>
-          : null;
+    payload?.error && typeof payload.error === "object"
+      ? payload.error as Record<string, unknown>
+      : null;
   return String(
     errorObject?.message ??
-        payload?.message ??
-        payload?.detail ??
-        errorObject?.code ??
-        payload?.error_description ??
-        payload?.error ??
-        rawBody,
+    payload?.message ??
+    payload?.detail ??
+    errorObject?.code ??
+    payload?.error_description ??
+    payload?.error ??
+    rawBody,
   );
 }
 
@@ -235,12 +289,12 @@ function formatResetAt(seconds: number | undefined): string | null {
 }
 
 export interface AccountUsageWindow {
-    window_key: string;
-    label: string;
-    used_percent: number | null;
-    remaining_percent: number | null;
-    reset_at: string | null;
-    limit_reached: boolean | null;
+  window_key: string;
+  label: string;
+  used_percent: number | null;
+  remaining_percent: number | null;
+  reset_at: string | null;
+  limit_reached: boolean | null;
 }
 
 function isAccessTokenOnlyRecord(record: AuthRecord): boolean {
@@ -269,9 +323,9 @@ function buildUsageWindow(
   limitReached: boolean | null,
 ): AccountUsageWindow {
   const usedPercent =
-        typeof window?.used_percent === "number" && Number.isFinite(window.used_percent)
-          ? window.used_percent
-          : null;
+    typeof window?.used_percent === "number" && Number.isFinite(window.used_percent)
+      ? window.used_percent
+      : null;
   return {
     window_key: windowKey,
     label,
@@ -284,9 +338,9 @@ function buildUsageWindow(
 
 function extractUsageWindows(payload: UsagePayload | null, plan: string): AccountUsageWindow[] {
   const limitReached =
-        typeof payload?.rate_limit?.limit_reached === "boolean"
-          ? payload.rate_limit.limit_reached
-          : null;
+    typeof payload?.rate_limit?.limit_reached === "boolean"
+      ? payload.rate_limit.limit_reached
+      : null;
   const primary = payload?.rate_limit?.primary_window;
   const secondary = payload?.rate_limit?.secondary_window ?? payload?.rate_limit?.daily_window ?? payload?.rate_limit?.weekly_window;
 
@@ -301,37 +355,37 @@ function extractUsageWindows(payload: UsagePayload | null, plan: string): Accoun
 }
 
 function deriveStatus(summary: {
-    ok: boolean;
-    rawStatus: number;
-    credentialType: "codex_auth" | "access_token_only" | "none";
-    note: string;
-    limitReached: boolean | null;
-    remainingPercent: number | null;
-    refreshed: boolean;
-}): {statusCode: string; statusLabel: string} {
+  ok: boolean;
+  rawStatus: number;
+  credentialType: "codex_auth" | "access_token_only" | "none";
+  note: string;
+  limitReached: boolean | null;
+  remainingPercent: number | null;
+  refreshed: boolean;
+}): { statusCode: string; statusLabel: string } {
   if (summary.credentialType === "access_token_only") {
-    return {statusCode: "access_token_only", statusLabel: "只保存 accessToken"};
+    return { statusCode: "access_token_only", statusLabel: "只保存 accessToken" };
   }
   if (summary.credentialType === "none") {
-    return {statusCode: "credential_expired", statusLabel: "凭据过期"};
+    return { statusCode: "credential_expired", statusLabel: "凭据过期" };
   }
   if (summary.rawStatus === 0) {
-    return {statusCode: "network_error", statusLabel: "网络请求失败"};
+    return { statusCode: "network_error", statusLabel: "网络请求失败" };
   }
   if (summary.ok) {
     if (summary.limitReached || summary.remainingPercent === 0) {
-      return {statusCode: "quota_exhausted", statusLabel: "额度已用尽"};
+      return { statusCode: "quota_exhausted", statusLabel: "额度已用尽" };
     }
-    return {statusCode: "authorized", statusLabel: "正常"};
+    return { statusCode: "authorized", statusLabel: "正常" };
   }
   const note = summary.note.toLowerCase();
   if (summary.rawStatus === 401 || note.includes("refresh") || note.includes("token") || note.includes("expired") || note.includes("缺少 refresh_token")) {
-    return {statusCode: "credential_expired", statusLabel: "凭据过期"};
+    return { statusCode: "credential_expired", statusLabel: "凭据过期" };
   }
   if (summary.rawStatus === 403 || note.includes("deactivated") || note.includes("forbidden")) {
-    return {statusCode: "account_deactivated", statusLabel: "账号已被封禁"};
+    return { statusCode: "account_deactivated", statusLabel: "账号已被封禁" };
   }
-  return {statusCode: "account_abnormal", statusLabel: "账号状态异常"};
+  return { statusCode: "account_abnormal", statusLabel: "账号状态异常" };
 }
 
 function normalizeRefreshedAuthRecord(existing: AuthRecord, payload: OAuthTokenResponse): AuthRecord {
@@ -348,21 +402,21 @@ function normalizeRefreshedAuthRecord(existing: AuthRecord, payload: OAuthTokenR
   const accessClaims = decodeJwtClaims(payload.access_token);
   const idClaims = decodeJwtClaims(payload.id_token);
   const accountId =
-        accessClaims?.["https://api.openai.com/auth"]?.chatgpt_account_id?.trim() ||
-        idClaims?.["https://api.openai.com/auth"]?.chatgpt_account_id?.trim() ||
-        existing.account_id?.trim() ||
-        "";
+    accessClaims?.["https://api.openai.com/auth"]?.chatgpt_account_id?.trim() ||
+    idClaims?.["https://api.openai.com/auth"]?.chatgpt_account_id?.trim() ||
+    existing.account_id?.trim() ||
+    "";
   const email =
-        normalizeEmailAddress(existing.email) ||
-        normalizeEmailAddress(idClaims?.email) ||
-        normalizeEmailAddress(accessClaims?.email) ||
-        "";
+    normalizeEmailAddress(existing.email) ||
+    normalizeEmailAddress(idClaims?.email) ||
+    normalizeEmailAddress(accessClaims?.email) ||
+    "";
   const exp =
-        accessClaims?.exp
-          ? new Date(accessClaims.exp * 1000).toISOString()
-          : typeof payload.expires_in === "number" && payload.expires_in > 0
-            ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
-            : existing.expired?.trim() || "";
+    accessClaims?.exp
+      ? new Date(accessClaims.exp * 1000).toISOString()
+      : typeof payload.expires_in === "number" && payload.expires_in > 0
+        ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
+        : existing.expired?.trim() || "";
 
   return {
     ...existing,
@@ -383,7 +437,7 @@ export async function refreshAccessToken(
   record: AuthRecord,
 ): Promise<{ record?: AuthRecord; error?: string; status?: number }> {
   if (!record.refresh_token) {
-    return {error: "缺少 refresh_token"};
+    return { error: "缺少 refresh_token" };
   }
 
   let lastError = "";
@@ -431,10 +485,33 @@ export async function refreshAccessToken(
     }
   }
 
-  return {error: lastError || "refresh 失败", status: lastStatus || undefined};
+  return { error: lastError || "refresh 失败", status: lastStatus || undefined };
 }
 
-async function sendUsageProbe(accessToken: string, accountId: string): Promise<ProbeResponse> {
+function resolveUsageProbeDeviceProfile(record: AuthRecord): DeviceProfile {
+  const rawProfile = record.device_profile;
+  if (rawProfile && typeof rawProfile === "object") {
+    const profile = rawProfile as Partial<DeviceProfile>;
+    const fallback = defaultDeviceProfile();
+    if (typeof profile.userAgent === "string" && typeof profile.acceptLanguage === "string") {
+      return {
+        ...fallback,
+        ...profile,
+        id: profile.id || fallback.id,
+        userAgent: profile.userAgent || fallback.userAgent,
+        acceptLanguage: profile.acceptLanguage || fallback.acceptLanguage,
+        languages: Array.isArray(profile.languages) && profile.languages.length > 0
+          ? profile.languages.slice()
+          : fallback.languages,
+      };
+    }
+  }
+  return defaultDeviceProfile();
+}
+
+async function sendUsageProbe(accessToken: string, accountId: string, deviceProfile?: DeviceProfile): Promise<ProbeResponse> {
+  const profile = deviceProfile ?? defaultDeviceProfile();
+  const requestContext = buildUsageProbeRequestContext(accountId, profile);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), REQUEST_TIMEOUT_MS);
   try {
@@ -443,10 +520,11 @@ async function sendUsageProbe(accessToken: string, accountId: string): Promise<P
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
-        "User-Agent": DEFAULT_USER_AGENT,
-        Origin: "https://chatgpt.com",
-        Referer: "https://chatgpt.com/",
-        ...(accountId ? {"Chatgpt-Account-Id": accountId} : {}),
+        ...buildBrowserHeaders(profile, {
+          Origin: "https://chatgpt.com",
+          Referer: "https://chatgpt.com/",
+          ...(accountId ? { "Chatgpt-Account-Id": accountId } : {}),
+        }),
       },
       signal: controller.signal,
       dispatcher: buildDispatcher(),
@@ -454,11 +532,13 @@ async function sendUsageProbe(accessToken: string, accountId: string): Promise<P
     return {
       status: response.status,
       body: await response.text(),
+      requestContext,
     };
   } catch (error) {
     return {
       status: 0,
       body: String(error),
+      requestContext,
     };
   } finally {
     clearTimeout(timer);
@@ -538,6 +618,7 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
   let refreshed = false;
   let probe: ProbeResponse;
   let message = "";
+  const probeDeviceProfile = resolveUsageProbeDeviceProfile(record);
 
   if (forceRefresh) {
     const result = await refreshAccessToken(record);
@@ -548,14 +629,16 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
       probe = await sendUsageProbe(record.access_token ?? "", record.account_id?.trim() || "");
       message = extractMessage(probe.body);
     } else {
+      const fallbackProfile = resolveUsageProbeDeviceProfile(record);
       probe = {
         status: result.status ?? 0,
         body: result.error || "refresh 失败",
+        requestContext: buildUsageProbeRequestContext(record.account_id?.trim() || "", fallbackProfile),
       };
       message = result.error || "refresh 失败";
     }
   } else {
-    probe = await sendUsageProbe(record.access_token, record.account_id?.trim() || "");
+    probe = await sendUsageProbe(record.access_token, record.account_id?.trim() || "", probeDeviceProfile);
     message = extractMessage(probe.body);
   }
 
@@ -594,7 +677,7 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
         record = result.record;
         refreshed = true;
         updateAuthFileContent(authFileId, JSON.stringify(record));
-        probe = await sendUsageProbe(record.access_token ?? "", record.account_id?.trim() || "");
+        probe = await sendUsageProbe(record.access_token ?? "", record.account_id?.trim() || "", probeDeviceProfile);
         message = extractMessage(probe.body);
       } else {
         message = result.error || message;
@@ -607,14 +690,14 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
   const windows = extractUsageWindows(payload, plan);
   const primary = windows[0];
   const usedPercent =
-        typeof primary?.used_percent === "number" && Number.isFinite(primary.used_percent)
-          ? primary.used_percent
-          : null;
+    typeof primary?.used_percent === "number" && Number.isFinite(primary.used_percent)
+      ? primary.used_percent
+      : null;
   const remainingPercent = usedPercent == null ? null : Math.max(0, 100 - usedPercent);
   const limitReached =
-        typeof payload?.rate_limit?.limit_reached === "boolean"
-          ? payload.rate_limit.limit_reached
-          : null;
+    typeof payload?.rate_limit?.limit_reached === "boolean"
+      ? payload.rate_limit.limit_reached
+      : null;
   const status = deriveStatus({
     ok: probe.status === 200,
     rawStatus: probe.status,
@@ -647,7 +730,7 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
   };
 }
 
-export async function importAuthFiles(): Promise<{imported: number; updated: number; skipped: number}> {
+export async function importAuthFiles(): Promise<{ imported: number; updated: number; skipped: number }> {
   const files = await collectAuthFiles();
   let imported = 0;
   let updated = 0;
@@ -665,8 +748,8 @@ export async function importAuthFiles(): Promise<{imported: number; updated: num
       }
 
       const authExists = getDb().prepare("SELECT id FROM auth_files WHERE file_path = ?").get(filePath);
-      const normalizedRecord = {...record, email};
-      await upsertAccountFromAuthRecord(normalizedRecord, filePath, {contentJson: JSON.stringify(normalizedRecord, null, 2)});
+      const normalizedRecord = { ...record, email };
+      await upsertAccountFromAuthRecord(normalizedRecord, filePath, { contentJson: JSON.stringify(normalizedRecord, null, 2) });
       if (authExists) {
         updated += 1;
       } else {
@@ -677,7 +760,7 @@ export async function importAuthFiles(): Promise<{imported: number; updated: num
     }
   }
 
-  return {imported, updated, skipped};
+  return { imported, updated, skipped };
 }
 
 export async function upsertAccountFromAuthRecord(
@@ -690,7 +773,7 @@ export async function upsertAccountFromAuthRecord(
   if (!email) {
     throw new Error("auth 记录缺少 email");
   }
-  const normalizedRecord = {...record, email};
+  const normalizedRecord = { ...record, email };
   const timestamp = currentTimestamp();
   const sourceKind = options.sourceKind ?? (filePath && !options.preserveSource ? "local" : undefined);
   const sourceName = options.sourceName ?? null;
@@ -879,65 +962,65 @@ export function upsertAuthFile(accountId: number, filePath: string, record: Auth
 }
 
 export interface AccountListItem {
-    id: number;
-    email: string;
-    provider: string | null;
-    status: string;
-    plan: string | null;
-    remaining_percent: number | null;
-    used_percent: number | null;
-    reset_at: string | null;
-    last_check_at: string | null;
-    last_refresh_at: string | null;
-    last_auth_at: string | null;
-    last_error: string | null;
-    auto_reauth: number;
-    has_password: boolean | number;
-    created_at: string;
-    updated_at: string;
-    auth_file_path: string | null;
-    auth_file_name: string | null;
-    auth_credential_type: string | null;
-    current_step: string | null;
-    step_status: string | null;
-    last_step_at: string | null;
-    token_expires_at: string | null;
-    status_code: string | null;
-    status_label: string | null;
-    credential_type: string | null;
-    credential_source_kind: string | null;
-    credential_source_name: string | null;
-    credential_source_service_id: number | null;
-    credential_source_remote_id: string | null;
-    credential_synced_at: string | null;
-    needs_manual_reauth: number;
-    last_reauth_attempt_at: string | null;
-    last_reauth_error: string | null;
-    source_id: number | null;
-    source_name: string | null;
-    source_provider: string | null;
-    source_vendor: string | null;
-    source_batch_note: string | null;
-    mailbox_id: number | null;
-    usage_windows: AccountUsageWindow[];
-    platform_bindings: BoundPlatformService[];
+  id: number;
+  email: string;
+  provider: string | null;
+  status: string;
+  plan: string | null;
+  remaining_percent: number | null;
+  used_percent: number | null;
+  reset_at: string | null;
+  last_check_at: string | null;
+  last_refresh_at: string | null;
+  last_auth_at: string | null;
+  last_error: string | null;
+  auto_reauth: number;
+  has_password: boolean | number;
+  created_at: string;
+  updated_at: string;
+  auth_file_path: string | null;
+  auth_file_name: string | null;
+  auth_credential_type: string | null;
+  current_step: string | null;
+  step_status: string | null;
+  last_step_at: string | null;
+  token_expires_at: string | null;
+  status_code: string | null;
+  status_label: string | null;
+  credential_type: string | null;
+  credential_source_kind: string | null;
+  credential_source_name: string | null;
+  credential_source_service_id: number | null;
+  credential_source_remote_id: string | null;
+  credential_synced_at: string | null;
+  needs_manual_reauth: number;
+  last_reauth_attempt_at: string | null;
+  last_reauth_error: string | null;
+  source_id: number | null;
+  source_name: string | null;
+  source_provider: string | null;
+  source_vendor: string | null;
+  source_batch_note: string | null;
+  mailbox_id: number | null;
+  usage_windows: AccountUsageWindow[];
+  platform_bindings: BoundPlatformService[];
 }
 
 export interface AccountFilters {
-    q?: string;
-    status?: string;
-    credentialType?: string;
-    provider?: string;
-    plan?: string;
-    autoReauth?: string;
-    pushStatus?: string;
-    bindingServiceIds?: number[];
-    page?: number;
-    pageSize?: number;
+  q?: string;
+  status?: string;
+  credentialType?: string;
+  provider?: string;
+  plan?: string;
+  autoReauth?: string;
+  pushStatus?: string;
+  bindingServiceIds?: number[];
+  page?: number;
+  pageSize?: number;
 }
 
 export function listAccounts(filters: string | AccountFilters = ""): AccountListItem[] {
-  const normalized: AccountFilters = typeof filters === "string" ? {q: filters} : filters;
+  const normalized: AccountFilters = typeof filters === "string" ? { q: filters } : filters;
   const q = `%${String(normalized.q ?? "").trim()}%`;
   const bindingIds = Array.isArray(normalized.bindingServiceIds)
     ? [...new Set(normalized.bindingServiceIds.map(Number).filter((value) => Number.isFinite(value) && value > 0))]
@@ -1040,7 +1123,7 @@ export function listAccounts(filters: string | AccountFilters = ""): AccountList
             SELECT * FROM account_usage_windows
             WHERE account_id IN (${placeholders})
             ORDER BY account_id ASC, id ASC
-        `).all(...ids) as Array<AccountUsageWindow & {account_id: number}>;
+        `).all(...ids) as Array<AccountUsageWindow & { account_id: number }>;
     for (const window of windows) {
       const list = windowsByAccount.get(window.account_id) ?? [];
       list.push(window);
@@ -1089,7 +1172,7 @@ export function getActiveAuthFile(accountId: number): AuthFileRow {
   const timestamp = currentTimestamp();
   getDb().prepare("UPDATE auth_files SET active = 0 WHERE account_id = ?").run(accountId);
   getDb().prepare("UPDATE auth_files SET active = 1, updated_at = ? WHERE id = ?").run(timestamp, latest.id);
-  return {...latest, active: 1};
+  return { ...latest, active: 1 };
 }
 
 export async function setAccountPassword(accountId: number, password: string): Promise<void> {
@@ -1101,7 +1184,7 @@ export async function setAccountPassword(accountId: number, password: string): P
     `).run(encrypted || null, currentTimestamp(), accountId);
 }
 
-export async function updateAccountProfile(accountId: number, input: {password?: string; sourceId?: number | null}): Promise<AccountRow> {
+export async function updateAccountProfile(accountId: number, input: { password?: string; sourceId?: number | null }): Promise<AccountRow> {
   getAccount(accountId);
   if (input.sourceId != null) {
     const source = getDb().prepare("SELECT id FROM mail_sources WHERE id = ?").get(input.sourceId);
@@ -1168,7 +1251,7 @@ function updateAccountFromSummary(accountId: number, summary: AuthSummary): void
   let existingStatusLabel: string | null = null;
   let existingLastError: string | null = null;
   if (isNetworkError) {
-    const existing = getDb().prepare("SELECT status, status_code, status_label, last_error FROM accounts WHERE id = ?").get(accountId) as {status: string; status_code: string | null; status_label: string | null; last_error: string | null} | undefined;
+    const existing = getDb().prepare("SELECT status, status_code, status_label, last_error FROM accounts WHERE id = ?").get(accountId) as { status: string; status_code: string | null; status_label: string | null; last_error: string | null } | undefined;
     if (existing) {
       existingStatus = existing.status;
       existingStatusCode = existing.status_code;
@@ -1239,20 +1322,20 @@ function updateAccountFromSummary(accountId: number, summary: AuthSummary): void
 }
 
 export interface CheckAccountOptions {
-    forceRefresh?: boolean;
-    /** 是否允许自动重登，默认 false（只读检查） */
-    triggerAutoReauth?: boolean;
+  forceRefresh?: boolean;
+  /** 是否允许自动重登，默认 false（只读检查） */
+  triggerAutoReauth?: boolean;
 }
 
 export async function checkAccount(accountId: number, forceRefreshOrOptions: boolean | CheckAccountOptions = false): Promise<AuthSummary> {
   const options: CheckAccountOptions = typeof forceRefreshOrOptions === "boolean"
-    ? {forceRefresh: forceRefreshOrOptions}
+    ? { forceRefresh: forceRefreshOrOptions }
     : forceRefreshOrOptions;
   const forceRefresh = Boolean(options.forceRefresh);
   const triggerAutoReauth = Boolean(options.triggerAutoReauth);
 
   // 已封禁账号不执行任何操作
-  const accountRow = getDb().prepare("SELECT status_code FROM accounts WHERE id = ?").get(accountId) as {status_code: string | null} | undefined;
+  const accountRow = getDb().prepare("SELECT status_code FROM accounts WHERE id = ?").get(accountId) as { status_code: string | null } | undefined;
   if (accountRow?.status_code === "account_deactivated") {
     return {
       file: "",
@@ -1304,7 +1387,7 @@ function maybeTriggerAutoReauth(accountId: number, summary: AuthSummary): void {
     SELECT a.auto_reauth, a.password_encrypted, a.needs_manual_reauth, a.email
     FROM accounts a
     WHERE a.id = ?
-  `).get(accountId) as {auto_reauth: number; password_encrypted: string | null; needs_manual_reauth: number; email: string} | undefined;
+  `).get(accountId) as { auto_reauth: number; password_encrypted: string | null; needs_manual_reauth: number; email: string } | undefined;
   if (!row) {
     return;
   }
@@ -1318,24 +1401,24 @@ function maybeTriggerAutoReauth(accountId: number, summary: AuthSummary): void {
     return;
   }
   reauthTriggerInFlight.add(accountId);
-  const job = createJob("reauth", `自动重登 ${row.email}`, {id: accountId, mode: "auto", trigger: "auto"});
+  const job = createJob("reauth", `自动重登 ${row.email}`, { id: accountId, mode: "auto", trigger: "auto" });
   void (async () => {
     try {
-      const {reauthorizeAccount} = await import("./registration-service.js");
+      const { reauthorizeAccount } = await import("./registration-service.js");
       await runJob(job.id, async () => {
-        const result = await reauthorizeAccount(accountId, job.id, {mode: "auto"});
+        const result = await reauthorizeAccount(accountId, job.id, { mode: "auto" });
         try {
           await pushAccountToBoundPlatforms(accountId);
         } catch (pushError) {
           addJobEvent(job.id, "warn", `推送绑定平台失败: ${pushError instanceof Error ? pushError.message : String(pushError)}`);
         }
         try {
-          const summary = await checkAccount(accountId, {forceRefresh: true, triggerAutoReauth: false});
-          return {...result, boundPlatformPush: "success", check: summary};
+          const summary = await checkAccount(accountId, { forceRefresh: true, triggerAutoReauth: false });
+          return { ...result, boundPlatformPush: "success", check: summary };
         } catch (checkError) {
-          return {...result, boundPlatformPush: "success", checkError: checkError instanceof Error ? checkError.message : String(checkError)};
+          return { ...result, boundPlatformPush: "success", checkError: checkError instanceof Error ? checkError.message : String(checkError) };
         }
-      }, {exclusiveRegister: true});
+      }, { exclusiveRegister: true });
     } finally {
       reauthTriggerInFlight.delete(accountId);
     }
@@ -1366,7 +1449,7 @@ function resolveBindServiceId(kind: "cpa" | "sub2api", serviceId: number | undef
     SELECT id FROM integration_services
     WHERE kind = ? AND enabled = 1
     ORDER BY priority ASC, id ASC
-  `).all(kind) as Array<{id: number; base_url: string}>;
+  `).all(kind) as Array<{ id: number; base_url: string }>;
   for (const r of row) {
     if (r.base_url.replace(/\/+$/, "").toLowerCase() === normalizedUrl) {
       return r.id;
@@ -1393,7 +1476,7 @@ function resolveKnownSub2APIRemoteIds(accountId: number, serviceId: number | und
       AND credential_source_kind = 'sub2api'
       AND credential_source_service_id = ?
       AND credential_source_remote_id IS NOT NULL
-  `).all(accountId, serviceId, accountId, serviceId) as Array<{remoteId: string | null}>;
+  `).all(accountId, serviceId, accountId, serviceId) as Array<{ remoteId: string | null }>;
   const ids = new Set<number>();
   for (const row of rows) {
     const id = Number(String(row.remoteId ?? "").trim());
@@ -1443,12 +1526,12 @@ function rememberSub2APIRemoteId(accountId: number, authFileId: number, serviceI
 
 async function recoverSub2APIAccountStatesAfterPush(
   accountId: number,
-  service: {id?: number; baseUrl: string; secret: string; options: Record<string, unknown>},
+  service: { id?: number; baseUrl: string; secret: string; options: Record<string, unknown> },
   accountIds: number[],
 ): Promise<{
   recovered: number[];
   schedulableEnabled: number[];
-  failed: Array<{accountId: number; error: string}>;
+  failed: Array<{ accountId: number; error: string }>;
 }> {
   const ids = [...new Set([
     ...accountIds,
@@ -1456,7 +1539,7 @@ async function recoverSub2APIAccountStatesAfterPush(
   ])];
   const recovered: number[] = [];
   const schedulableEnabled: number[] = [];
-  const failed: Array<{accountId: number; error: string}> = [];
+  const failed: Array<{ accountId: number; error: string }> = [];
   const config = {
     baseUrl: service.baseUrl,
     adminApiKey: service.secret,
@@ -1470,14 +1553,14 @@ async function recoverSub2APIAccountStatesAfterPush(
       schedulableEnabled.push(remoteId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      failed.push({accountId: remoteId, error: message});
+      failed.push({ accountId: remoteId, error: message });
       console.warn(`sub2apiRecoverStateOrSchedulableFailed: account=${accountId} remote=${remoteId} error=${message}`);
     }
   }
-  return {recovered, schedulableEnabled, failed};
+  return { recovered, schedulableEnabled, failed };
 }
 
-export function readAccountAuthFile(accountId: number): {fileName: string; content: Buffer} {
+export function readAccountAuthFile(accountId: number): { fileName: string; content: Buffer } {
   const authFile = getActiveAuthFile(accountId);
   const contentJson = authFile.content_json ?? getAuthFileContent(authFile.id);
   if (!contentJson) {
@@ -1490,17 +1573,17 @@ export function readAccountAuthFile(accountId: number): {fileName: string; conte
 }
 
 export interface DeleteAccountOptions {
-    deleteFromServiceIds?: number[];
+  deleteFromServiceIds?: number[];
 }
 
-type PlatformDeleteNotice = {serviceId: number; serviceName: string; kind: string; message: string};
+type PlatformDeleteNotice = { serviceId: number; serviceName: string; kind: string; message: string };
 
 export interface DeleteAccountResult {
-    deleted: boolean;
-    email: string;
-    platformErrors: PlatformDeleteNotice[];
-    platformDeleted: Array<{serviceId: number; serviceName: string; kind: string}>;
-    platformSkipped: PlatformDeleteNotice[];
+  deleted: boolean;
+  email: string;
+  platformErrors: PlatformDeleteNotice[];
+  platformDeleted: Array<{ serviceId: number; serviceName: string; kind: string }>;
+  platformSkipped: PlatformDeleteNotice[];
 }
 
 function isRemoteMissingDeleteError(kind: string, message: string): boolean {
@@ -1526,7 +1609,7 @@ async function deletePlatformRecordsForAccount(
   const errors: DeleteAccountResult["platformErrors"] = [];
   const skipped: DeleteAccountResult["platformSkipped"] = [];
   if (!serviceIds.length) {
-    return {deleted, errors, skipped};
+    return { deleted, errors, skipped };
   }
   const placeholders = serviceIds.map((_, index) => `@id${index}`).join(",");
   const params: Record<string, number> = {};
@@ -1543,8 +1626,8 @@ async function deletePlatformRecordsForAccount(
     JOIN integration_services s ON s.id = af.credential_source_service_id
     WHERE af.account_id = @accountId
       AND af.credential_source_service_id IN (${placeholders})
-  `).all({...params, accountId}) as Array<{serviceId: number; remoteId: string | null; fileName: string; kind: string; serviceName: string}>;
-  const accountEmail = (getDb().prepare("SELECT email FROM accounts WHERE id = ?").get(accountId) as {email: string} | undefined)?.email ?? "";
+  `).all({ ...params, accountId }) as Array<{ serviceId: number; remoteId: string | null; fileName: string; kind: string; serviceName: string }>;
+  const accountEmail = (getDb().prepare("SELECT email FROM accounts WHERE id = ?").get(accountId) as { email: string } | undefined)?.email ?? "";
   const requested = new Set(serviceIds);
   const handledServices = new Set<number>();
   for (const row of rows) {
@@ -1556,11 +1639,11 @@ async function deletePlatformRecordsForAccount(
         throw new Error("平台服务不存在或已禁用");
       }
       if (row.kind === "cpa") {
-        await deleteAuthFileFromCPAService({baseUrl: service.baseUrl, managementKey: service.secret}, row.fileName);
+        await deleteAuthFileFromCPAService({ baseUrl: service.baseUrl, managementKey: service.secret }, row.fileName);
       } else if (row.kind === "sub2api") {
         let remote = (row.remoteId ?? "").trim();
         if (!remote && accountEmail) {
-          const found = await findSub2APIAccountByEmail({baseUrl: service.baseUrl, adminApiKey: service.secret, options: service.options}, accountEmail);
+          const found = await findSub2APIAccountByEmail({ baseUrl: service.baseUrl, adminApiKey: service.secret, options: service.options }, accountEmail);
           if (found) {
             remote = found;
           }
@@ -1574,11 +1657,11 @@ async function deletePlatformRecordsForAccount(
           });
           continue;
         }
-        await deleteAccountFromSub2APIService({baseUrl: service.baseUrl, adminApiKey: service.secret, options: service.options}, remote);
+        await deleteAccountFromSub2APIService({ baseUrl: service.baseUrl, adminApiKey: service.secret, options: service.options }, remote);
       } else {
         throw new Error(`未支持的平台类型: ${row.kind}`);
       }
-      deleted.push({serviceId: row.serviceId, serviceName: row.serviceName, kind: row.kind});
+      deleted.push({ serviceId: row.serviceId, serviceName: row.serviceName, kind: row.kind });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const notice = {
@@ -1600,7 +1683,7 @@ async function deletePlatformRecordsForAccount(
     if (handledServices.has(id)) {
       continue;
     }
-    const service = getDb().prepare("SELECT kind, name FROM integration_services WHERE id = ?").get(id) as {kind: string; name: string} | undefined;
+    const service = getDb().prepare("SELECT kind, name FROM integration_services WHERE id = ?").get(id) as { kind: string; name: string } | undefined;
     const kind = service?.kind ?? "";
     // Sub2API 服务：尝试通过邮箱查找远端 ID 并删除
     if (kind === "sub2api" && accountEmail) {
@@ -1608,19 +1691,19 @@ async function deletePlatformRecordsForAccount(
         const resolved = await resolvePushServices("sub2api", [id]);
         const svc = resolved[0];
         if (svc) {
-          const found = await findSub2APIAccountByEmail({baseUrl: svc.baseUrl, adminApiKey: svc.secret, options: svc.options}, accountEmail);
+          const found = await findSub2APIAccountByEmail({ baseUrl: svc.baseUrl, adminApiKey: svc.secret, options: svc.options }, accountEmail);
           if (found) {
-            await deleteAccountFromSub2APIService({baseUrl: svc.baseUrl, adminApiKey: svc.secret, options: svc.options}, found);
-            deleted.push({serviceId: id, serviceName: service?.name ?? String(id), kind});
+            await deleteAccountFromSub2APIService({ baseUrl: svc.baseUrl, adminApiKey: svc.secret, options: svc.options }, found);
+            deleted.push({ serviceId: id, serviceName: service?.name ?? String(id), kind });
             continue;
           }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (isRemoteMissingDeleteError(kind, message)) {
-          skipped.push({serviceId: id, serviceName: service?.name ?? String(id), kind, message: "远端记录已不存在，已跳过远端删除"});
+          skipped.push({ serviceId: id, serviceName: service?.name ?? String(id), kind, message: "远端记录已不存在，已跳过远端删除" });
         } else {
-          errors.push({serviceId: id, serviceName: service?.name ?? String(id), kind, message});
+          errors.push({ serviceId: id, serviceName: service?.name ?? String(id), kind, message });
         }
         continue;
       }
@@ -1632,17 +1715,17 @@ async function deletePlatformRecordsForAccount(
       message: "本地未记录该平台上的远端 ID，已跳过远端删除",
     });
   }
-  return {deleted, errors, skipped};
+  return { deleted, errors, skipped };
 }
 
 export async function deleteAccount(accountId: number, options: DeleteAccountOptions = {}): Promise<DeleteAccountResult> {
   const account = getAccount(accountId);
   const serviceIds = [...new Set((options.deleteFromServiceIds ?? []).map(Number).filter((v) => Number.isFinite(v) && v > 0))];
-  const {deleted, errors, skipped} = await deletePlatformRecordsForAccount(accountId, serviceIds);
+  const { deleted, errors, skipped } = await deletePlatformRecordsForAccount(accountId, serviceIds);
   // 删除绑定的本地邮箱（无其他账号引用时才删除）
   const mailboxId = account.mailbox_id;
   if (mailboxId) {
-    const otherRefs = getDb().prepare("SELECT COUNT(*) AS cnt FROM accounts WHERE mailbox_id = ? AND id != ?").get(mailboxId, accountId) as {cnt: number};
+    const otherRefs = getDb().prepare("SELECT COUNT(*) AS cnt FROM accounts WHERE mailbox_id = ? AND id != ?").get(mailboxId, accountId) as { cnt: number };
     if (!otherRefs.cnt) {
       try {
         getDb().prepare("DELETE FROM mailboxes WHERE id = ?").run(mailboxId);
@@ -1667,7 +1750,7 @@ export async function bulkDeleteAccounts(
 ): Promise<{
   total: number;
   deleted: number;
-  failures: Array<{id: number; message: string}>;
+  failures: Array<{ id: number; message: string }>;
   perAccount: Array<{
     id: number;
     email: string;
@@ -1677,7 +1760,7 @@ export async function bulkDeleteAccounts(
   }>;
 }> {
   const uniqueIds = [...new Set(ids.map(Number).filter((v) => Number.isFinite(v) && v > 0))];
-  const failures: Array<{id: number; message: string}> = [];
+  const failures: Array<{ id: number; message: string }> = [];
   const perAccount: Array<{
     id: number;
     email: string;
@@ -1698,13 +1781,13 @@ export async function bulkDeleteAccounts(
         platformSkipped: result.platformSkipped,
       });
     } catch (error) {
-      failures.push({id, message: error instanceof Error ? error.message : String(error)});
+      failures.push({ id, message: error instanceof Error ? error.message : String(error) });
     }
   }
-  return {total: uniqueIds.length, deleted, failures, perAccount};
+  return { total: uniqueIds.length, deleted, failures, perAccount };
 }
 
-export function exportAccountsAuthZip(accountIds: number[]): {fileName: string; content: Buffer; count: number} {
+export function exportAccountsAuthZip(accountIds: number[]): { fileName: string; content: Buffer; count: number } {
   const ids = [...new Set(accountIds.map(Number).filter(Number.isFinite))];
   if (!ids.length) {
     throw new Error("请先选择需要导出的账号");
@@ -1765,7 +1848,7 @@ export async function pushAccount(accountId: number, target: PushTarget, service
           ensureAccountPlatformBinding(accountId, boundId);
           updateBindingPushResult(accountId, boundId, "success", "CPA 推送成功");
         }
-        serviceResults.push({id: service.id, name: service.name, fallback: service.fallback, status: "success"});
+        serviceResults.push({ id: service.id, name: service.name, fallback: service.fallback, status: "success" });
       } catch (error) {
         const boundId = resolveBindServiceId("cpa", service.id, service.baseUrl);
         if (boundId) {
@@ -1843,7 +1926,7 @@ export async function pushAccountToBoundPlatforms(accountId: number): Promise<Re
   const services = listAccountPlatformBindings(accountId).filter((service) => service.enabled);
   if (!services.length) {
     updateAuthFileStep(accountId, "无绑定平台，跳过自动同步", "success");
-    return {skipped: true, reason: "no_bound_platforms"};
+    return { skipped: true, reason: "no_bound_platforms" };
   }
   const result: Record<string, unknown> = {};
   const cpaIds = services.filter((service) => service.kind === "cpa").map((service) => service.id);
@@ -1868,7 +1951,7 @@ export async function mapWithConcurrency<T, R>(
 
   const results = new Array<R>(items.length);
   let nextIndex = 0;
-  const workers = Array.from({length: Math.min(concurrency, items.length)}, async () => {
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (true) {
       const index = nextIndex;
       nextIndex += 1;
@@ -1911,7 +1994,7 @@ export function dashboardStats(): Record<string, unknown> {
       averageRemaining: averageRemaining == null ? null : Number(averageRemaining.toFixed(1)),
     };
   });
-  return {total, ok, limited, invalid, remaining: Number(remaining.toFixed(2)), planGroups};
+  return { total, ok, limited, invalid, remaining: Number(remaining.toFixed(2)), planGroups };
 }
 
 function normalizePlanGroup(plan: string | null | undefined): "free" | "plus" | "pro" | "team" {

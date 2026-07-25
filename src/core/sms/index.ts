@@ -1,5 +1,5 @@
 import { ActivationBroker } from "./activation-broker.js";
-import { createHeroSmsProvider } from "./heroSMS.js";
+import { createHeroSmsProvider, type HeroSmsProviderConfig } from "./heroSMS.js";
 import { createGrizzlySmsProvider, type GrizzlySmsProviderConfig } from "./grizzlySMS.js";
 import { createSmsBowerProvider } from "./smsBower.js";
 import type { SmsProvider } from "./provider.js";
@@ -13,7 +13,7 @@ type SMSBrokerOption = {
   maxPrice: number;
   pollAttempts: number;
   pollIntervalMs: number;
-  fetchImpl?: GrizzlySmsProviderConfig["fetchImpl"];
+  fetchImpl?: GrizzlySmsProviderConfig["fetchImpl"] | HeroSmsProviderConfig["fetchImpl"];
 }
 
 export const createSmsProvider = (option: SMSBrokerOption): SmsProvider => {
@@ -68,6 +68,7 @@ export const createSmsProvider = (option: SMSBrokerOption): SmsProvider => {
       pollAttempts: option.pollAttempts,
       pollIntervalMs: option.pollIntervalMs,
     },
+    fetchImpl: option.fetchImpl as HeroSmsProviderConfig["fetchImpl"],
   });
 };
 

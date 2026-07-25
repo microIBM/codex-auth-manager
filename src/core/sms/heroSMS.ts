@@ -4,7 +4,6 @@ import {
   fetch as undiciFetch,
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
-  type Response as UndiciResponse,
 } from "undici";
 import type {
   SmsActivation,
@@ -16,6 +15,12 @@ const HERO_SMS_DEFAULT_BASE_URL = "https://hero-sms.com/stubs/handler_api.php";
 const HERO_SMS_DEFAULT_POLL_ATTEMPTS = 24;
 const HERO_SMS_DEFAULT_POLL_INTERVAL_MS = 5000;
 const HERO_SMS_CODE_PATTERN = /(?<!\d)(\d{4,8})(?!\d)/;
+
+type HeroSmsFetchResponse = Pick<Response, "ok" | "status" | "text">;
+type HeroSmsFetch = (
+  input: string | URL,
+  init?: UndiciRequestInit,
+) => Promise<HeroSmsFetchResponse>;
 
 interface DeliveredActivationSnapshot {
   activationStatus: string;
@@ -48,6 +53,7 @@ export interface HeroSmsProviderConfig {
   pollIntervalMs?: number;
   defaultRequestOptions?: HeroSmsNumberRequestOptions;
   defaultWaitForCodeOptions?: HeroSmsWaitForCodeOptions;
+  fetchImpl?: HeroSmsFetch;
 }
 
 export interface HeroSmsNumberRequestOptions {
@@ -206,6 +212,9 @@ async function heroSmsFetch(
   input: string | URL,
   init: UndiciRequestInit = {},
 ) {
+  if (config.fetchImpl) {
+    return config.fetchImpl(input, init);
+  }
   return undiciFetch(input, {
     ...init,
     dispatcher: buildDispatcher(config),
@@ -244,7 +253,7 @@ function setOptionalQuery(
   searchParams.set(key, normalized);
 }
 
-async function readResponseBody(response: UndiciResponse): Promise<unknown> {
+async function readResponseBody(response: HeroSmsFetchResponse): Promise<unknown> {
   const text = (await response.text()).trim();
   if (!text) {
     return "";
@@ -341,6 +350,13 @@ function createApiError(
 ): HeroSmsApiError {
   const message = `HeroSMS ${action} 请求失败: ${formatPayload(payload)}`;
   return new HeroSmsApiError(action, message, { httpStatus, payload });
+}
+
+function isNoNumbersGetNumberError(error: unknown): error is HeroSmsApiError {
+  return error instanceof HeroSmsApiError
+    && error.action === "getNumberV2"
+    && typeof error.payload === "string"
+    && error.payload.trim() === "NO_NUMBERS";
 }
 
 async function requestHeroSmsApi(
@@ -742,15 +758,34 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
     async requestPhoneNumber(
       options: HeroSmsNumberRequestOptions,
     ): Promise<HeroSmsActivation> {
-      const payload = await requestHeroSmsApi(config, "getNumberV2", {
-        service: ensureServiceConfigured(options),
-        country: ensureCountryConfigured(options),
-        operator: normalizeListValue(options.operator),
-        maxPrice: options.maxPrice,
-        fixedPrice: options.fixedPrice,
-        ref: options.ref,
-        phoneException: normalizeListValue(options.phoneException),
-      });
+      const service = ensureServiceConfigured(options);
+      const country = ensureCountryConfigured(options);
+      const requestNumber = (requestOptions: HeroSmsNumberRequestOptions) =>
+        requestHeroSmsApi(config, "getNumberV2", {
+          service,
+          country,
+          operator: normalizeListValue(requestOptions.operator),
+          maxPrice: requestOptions.maxPrice,
+          fixedPrice: requestOptions.fixedPrice,
+          ref: requestOptions.ref,
+          phoneException: normalizeListValue(requestOptions.phoneException),
+        });
+
+      let payload: unknown;
+      try {
+        payload = await requestNumber(options);
+      } catch (error) {
+        if (!options.fixedPrice || !isNoNumbersGetNumberError(error)) {
+          throw error;
+        }
+        console.warn(
+          `[HeroSMS] fixedPrice=true 未拿到号码，按 maxPrice 上限重试: service=${service} country=${country} maxPrice=${options.maxPrice ?? ""}`,
+        );
+        payload = await requestNumber({
+          ...options,
+          fixedPrice: undefined,
+        });
+      }
 
       return normalizeActivation(payload);
     },

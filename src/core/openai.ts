@@ -1,19 +1,21 @@
-import {mkdir, writeFile} from "node:fs/promises";
-import {createInterface} from "node:readline/promises";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import net from "node:net";
-import {stdin as input, stdout as output} from "node:process";
+import { stdin as input, stdout as output } from "node:process";
 import tls from "node:tls";
-import {URLSearchParams} from "node:url";
+import { URLSearchParams } from "node:url";
 import path from "node:path";
-import {Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher} from "undici";
-import {SocksClient} from "socks";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici";
+import { SocksClient } from "socks";
 import makeFetchCookie from "fetch-cookie";
-import {CookieJar} from "tough-cookie";
-import {appConfig} from "./config.js";
-import {shouldAutoUploadAuthToCLIProxyAPI, uploadAuthFileToCLIProxyAPI} from "./cliproxyapi.js";
-import {shouldAutoUploadAuthToSub2API, uploadAuthFileToSub2API} from "./sub2api.js";
-import {defaultDeviceProfile, type DeviceProfile, getDeviceClientHints} from "./device-profile.js";
-import {normalizeEmailAddress} from "./email-normalize.js";
+import { CookieJar } from "tough-cookie";
+import { appConfig } from "./config.js";
+import { shouldAutoUploadAuthToCLIProxyAPI, uploadAuthFileToCLIProxyAPI } from "./cliproxyapi.js";
+import { shouldAutoUploadAuthToSub2API, uploadAuthFileToSub2API } from "./sub2api.js";
+import { buildBrowserHeaders, defaultDeviceProfile, type DeviceProfile, getDeviceClientHints } from "./device-profile.js";
+import { normalizeEmailAddress } from "./email-normalize.js";
 import {
   AUTH_AUTHORIZE_CONTINUE_URL,
   AUTH_BASE_URL,
@@ -28,10 +30,10 @@ import {
   DEFAULT_REDIRECT_URI,
   DEFAULT_USER_AGENT,
 } from "./constants.js";
-import {getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG} from "./mailbox.js";
-import {fetchSentinelToken} from "./sentinel.js";
+import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
+import { fetchSentinelToken } from "./sentinel.js";
 import { pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
-import {ISMSActivationBroker} from "./sms/activation-broker.js";
+import { ISMSActivationBroker } from "./sms/activation-broker.js";
 
 type FetchLike = typeof fetch;
 
@@ -108,9 +110,9 @@ async function createSocksSocket(
   const destinationHost = String(options.hostname ?? "");
   const rawPort = options.port;
   const destinationPort =
-        rawPort === "" || rawPort == null
-          ? (options.protocol === "https:" ? 443 : 80)
-          : Number(rawPort);
+    rawPort === "" || rawPort == null
+      ? (options.protocol === "https:" ? 443 : 80)
+      : Number(rawPort);
   const proxyPort = Number(proxyUrl.port || (proxyUrl.protocol.startsWith("socks5") ? 1080 : 1080));
   const proxyType = proxyUrl.protocol.startsWith("socks4") ? 4 : 5;
 
@@ -147,87 +149,88 @@ async function createSocksSocket(
 }
 
 interface ContinueResponse {
-    continue_url: string;
-    method?: string;
-    page?: {
-        type?: string;
-        backstack_behavior?: string;
-        payload?: {
-            url?: string;
-        };
+  continue_url: string;
+  method?: string;
+  page?: {
+    type?: string;
+    backstack_behavior?: string;
+    payload?: {
+      url?: string;
     };
+  };
 }
 
 interface AuthSessionWorkspace {
-    id: string;
-    name?: string;
-    kind?: string;
+  id: string;
+  name?: string;
+  kind?: string;
 }
 
 interface ClientAuthSessionPayload {
-    workspaces?: AuthSessionWorkspace[];
+  workspaces?: AuthSessionWorkspace[];
 }
 
 interface OAuthTokenResponse {
-    access_token: string;
-    refresh_token?: string;
-    id_token?: string;
-    expires_in?: number;
-    token_type?: string;
-    scope?: string;
+  access_token: string;
+  refresh_token?: string;
+  id_token?: string;
+  expires_in?: number;
+  token_type?: string;
+  scope?: string;
 }
 
 interface JwtPayload {
-    email?: string;
-    exp?: number;
-    "https://api.openai.com/auth"?: {
-        chatgpt_account_id?: string;
-    };
+  email?: string;
+  exp?: number;
+  "https://api.openai.com/auth"?: {
+    chatgpt_account_id?: string;
+  };
 }
 
 export interface AuthLoginResult {
-    callbackURL: string;
-    code: string;
-    state: string;
-    authFile?: string;
+  callbackURL: string;
+  code: string;
+  state: string;
+  authFile?: string;
 }
 
 interface ChatGPTAuthSession {
-    accessToken?: string;
-    access_token?: string;
-    error?: string;
+  accessToken?: string;
+  access_token?: string;
+  error?: string;
 }
 
 interface ChatGPTAccessTokenClaims {
-    exp?: number;
+  exp?: number;
 }
 
 export interface SavedAuthRecord {
-    access_token: string;
-    account_id: string;
-    disabled: boolean;
-    email: string;
-    expired: string;
-    id_token: string;
-    last_refresh: string;
-    refresh_token: string;
-    type: "codex";
-    websockets: false;
+  access_token: string;
+  account_id: string;
+  disabled: boolean;
+  email: string;
+  expired: string;
+  id_token: string;
+  last_refresh: string;
+  refresh_token: string;
+  type: "codex";
+  websockets: false;
+  device_profile?: DeviceProfile;
 }
 
 export interface OpenAIClientOptions {
-    email?: string;
-    password: string;
-    userAgent?: string;
-    deviceProfile?: DeviceProfile;
-    manualMode?: boolean;
-    emailAddressProvider?: () => Promise<string>;
-    emailOtpProvider?: (email: string, excludeCodes: string[]) => Promise<string>;
-    progressCallback?: (step: number | string, total: number, message: string) => void;
-    signupScreenHint?: string;
-    smsBroker?: ISMSActivationBroker;
-    smsVerificationDisabled?: boolean;
-    shouldCancel?: () => boolean;
+  email?: string;
+  password: string;
+  userAgent?: string;
+  deviceProfile?: DeviceProfile;
+  manualMode?: boolean;
+  emailAddressProvider?: () => Promise<string>;
+  emailOtpProvider?: (email: string, excludeCodes: string[]) => Promise<string>;
+  progressCallback?: (step: number | string, total: number, message: string) => void;
+  signupScreenHint?: string;
+  smsBroker?: ISMSActivationBroker;
+  smsVerificationDisabled?: boolean;
+  shouldCancel?: () => boolean;
 }
 
 export class IdentityProviderMismatchError extends Error {
@@ -257,6 +260,10 @@ export class OpenAIClient {
   readonly smsVerificationDisabled: boolean;
   readonly shouldCancel?: () => boolean;
   private readonly abortController?: AbortController;
+  private readonly browserTransportEnabled: boolean;
+  private browserTransportFallbackWarned = false;
+  private browserContext?: BrowserContext;
+  private browserPage?: Page;
 
   constructor(options: OpenAIClientOptions) {
     this.smsBroker = options.smsBroker;
@@ -277,6 +284,8 @@ export class OpenAIClient {
     this.userAgent = this.deviceProfile.userAgent;
     this.clientHints = getDeviceClientHints(this.deviceProfile);
     this.manualMode = options.manualMode ?? !this.email;
+    this.browserTransportEnabled = process.env.OPENAI_BROWSER_TRANSPORT === "1"
+      || process.argv.includes("--browser-transport");
     this.emailAddressProvider = options.emailAddressProvider;
     this.emailOtpProvider = options.emailOtpProvider;
     this.progressCallback = options.progressCallback;
@@ -327,7 +336,7 @@ export class OpenAIClient {
     }
     if (
       oauthResp.url !== `${AUTH_BASE_URL}/log-in` &&
-            oauthResp.url !== `${AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`
+      oauthResp.url !== `${AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`
     ) {
       throw new Error(`OauthUrl重定向到错误的URL: ${oauthResp.url}`);
     }
@@ -655,7 +664,7 @@ export class OpenAIClient {
           referer: `${AUTH_BASE_URL}/email-verification`,
           "user-agent": this.userAgent,
         },
-        body: JSON.stringify({code}),
+        body: JSON.stringify({ code }),
       });
       if (response.ok) {
         const payload = (await response.json()) as ContinueResponse;
@@ -870,10 +879,10 @@ export class OpenAIClient {
 
   async fetchSentinelToken(
     flow:
-            | "authorize_continue"
-            | "password_verify"
-            | "username_password_create"
-            | "oauth_create_account",
+      | "authorize_continue"
+      | "password_verify"
+      | "username_password_create"
+      | "oauth_create_account",
   ): Promise<string> {
     return fetchSentinelToken({
       flow,
@@ -894,7 +903,7 @@ export class OpenAIClient {
       return this.promptEmailOtp();
     }
     console.log(`autoEmailOtp: provider=${MAILBOX_CONFIG.provider} targetEmail=${this.email}`);
-    const code = await getEmailVerificationCode(this.email, {excludeCodes});
+    const code = await getEmailVerificationCode(this.email, { excludeCodes });
     console.log(`[邮箱验证码] ${this.email} code=${code}`);
     return code;
   }
@@ -1032,7 +1041,7 @@ export class OpenAIClient {
   }
 
   private async promptEmailOtp(): Promise<string> {
-    const rl = createInterface({input, output});
+    const rl = createInterface({ input, output });
     try {
       const code = (await rl.question("请输入邮箱验证码: ")).trim();
       if (!/^\d{6}$/.test(code)) {
@@ -1117,7 +1126,7 @@ export class OpenAIClient {
 
   async saveChatGPTAccessToken(accessToken: string): Promise<string> {
     const atDir = path.resolve(process.cwd(), "auth", "at");
-    await mkdir(atDir, {recursive: true});
+    await mkdir(atDir, { recursive: true });
     const fileName = this.buildAuthFileName(this.email);
     const filePath = path.join(atDir, fileName);
     const accessClaims = this.decodeJwtPayload<ChatGPTAccessTokenClaims>(accessToken);
@@ -1187,8 +1196,8 @@ export class OpenAIClient {
     const encodedPayload = cookie.split(".")[0];
     const payload = this.decodeSignedJson<ClientAuthSessionPayload>(encodedPayload);
     const workspaceID =
-            payload.workspaces?.find((w) => w.kind === "personal")?.id
-            ?? payload.workspaces?.[0]?.id;
+      payload.workspaces?.find((w) => w.kind === "personal")?.id
+      ?? payload.workspaces?.[0]?.id;
     if (!workspaceID) {
       throw new Error(`当前会话未发现 workspace: ${JSON.stringify(payload)}`);
     }
@@ -1217,9 +1226,9 @@ export class OpenAIClient {
     const idClaims = this.decodeJwtPayload<JwtPayload>(payload.id_token);
     const email = normalizeEmailAddress(idClaims.email) || normalizeEmailAddress(accessClaims.email) || this.email;
     const accountID =
-            accessClaims["https://api.openai.com/auth"]?.chatgpt_account_id ??
-            idClaims["https://api.openai.com/auth"]?.chatgpt_account_id ??
-            "";
+      accessClaims["https://api.openai.com/auth"]?.chatgpt_account_id ??
+      idClaims["https://api.openai.com/auth"]?.chatgpt_account_id ??
+      "";
     const exp = accessClaims.exp;
     if (!accountID) {
       throw new Error(`token中缺少 account_id: ${JSON.stringify(accessClaims)}`);
@@ -1274,7 +1283,7 @@ export class OpenAIClient {
 
   private async saveAuthRecord(record: SavedAuthRecord): Promise<string> {
     const authDir = path.resolve(process.cwd(), "auth", COMMAND_AUTH_DIR_NAME);
-    await mkdir(authDir, {recursive: true});
+    await mkdir(authDir, { recursive: true });
     const normalizedRecord = {
       ...record,
       email: normalizeEmailAddress(record.email) || record.email,
@@ -1402,8 +1411,8 @@ export class OpenAIClient {
     }
 
     this.deviceID =
-            (await this.readCookie(CHATGPT_BASE_URL, "oai-did")) ||
-            (await this.readCookie("https://openai.com", "oai-did"));
+      (await this.readCookie(CHATGPT_BASE_URL, "oai-did")) ||
+      (await this.readCookie("https://openai.com", "oai-did"));
     if (!this.deviceID) {
       throw new Error("chatgpt.com 未返回 oai-did cookie");
     }
@@ -1479,9 +1488,9 @@ export class OpenAIClient {
     url: string,
     payload: unknown,
     options: {
-            referer: string;
-            sentinelToken?: string;
-        },
+      referer: string;
+      sentinelToken?: string;
+    },
   ): Promise<Response> {
     const headers = this.createBrowserHeaders({
       accept: "application/json",
@@ -1546,14 +1555,7 @@ export class OpenAIClient {
 
   private createBrowserHeaders(init: Record<string, string>): Headers {
     return new Headers({
-      "user-agent": this.userAgent,
-      "accept-language": this.deviceProfile.acceptLanguage,
-      "sec-ch-ua": this.clientHints.secChUa,
-      "sec-ch-ua-full-version-list": this.clientHints.secChUaFullVersionList,
-      "sec-ch-ua-mobile": this.clientHints.secChUaMobile,
-      "sec-ch-ua-platform": this.clientHints.secChUaPlatform,
-      "sec-ch-ua-platform-version": this.clientHints.secChUaPlatformVersion,
-      "sec-ch-viewport-width": this.clientHints.secChViewportWidth,
+      ...buildBrowserHeaders(this.deviceProfile),
       ...init,
     });
   }
@@ -1562,10 +1564,10 @@ export class OpenAIClient {
     const body = await response.text();
     try {
       const payload = JSON.parse(body) as {
-                error?: {
-                    code?: string | null;
-                };
-            };
+        error?: {
+          code?: string | null;
+        };
+      };
       const code = payload.error?.code;
       if (code) {
         return `${response.status} code=${code}`;
@@ -1591,6 +1593,13 @@ export class OpenAIClient {
             signal: this.abortController.signal,
           }
           : init;
+        if (this.browserTransportEnabled) {
+          try {
+            return await this.fetchWithBrowserTransport(input, initWithAbort);
+          } catch (error) {
+            this.warnBrowserTransportFallback(error);
+          }
+        }
         return await baseFetch(input, initWithAbort);
       } catch (error) {
         lastError = error;
@@ -1605,6 +1614,143 @@ export class OpenAIClient {
       }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private warnBrowserTransportFallback(error: unknown): void {
+    if (this.browserTransportFallbackWarned) {
+      return;
+    }
+    this.browserTransportFallbackWarned = true;
+    const firstLine = this.describeRetryError(error).split(/\r?\n/, 1)[0] || "unknown error";
+    console.warn(`[browserTransport] 浏览器传输失败，已降级为普通网络请求: ${firstLine}`);
+  }
+
+  private async fetchWithBrowserTransport(input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]): Promise<Response> {
+    const requestUrl = this.describeRetryTarget(input);
+    if (!requestUrl || requestUrl.startsWith("about:")) {
+      throw new Error("浏览器传输仅支持 http/https 请求");
+    }
+
+    const { page } = await this.ensureBrowserPage();
+    const headers = init?.headers ? new Headers(init.headers as HeadersInit) : new Headers();
+    const requestInit = {
+      method: init?.method ?? "GET",
+      headers: Object.fromEntries(headers.entries()),
+      redirect: "follow",
+      credentials: "include",
+    } as const;
+
+    const body = this.serializeRequestBody(init?.body);
+    const result = await page.evaluate(async ({ targetUrl, requestOptions, requestBody }) => {
+      const headers = new Headers(requestOptions.headers ?? {});
+      const fetchInit: RequestInit = {
+        method: requestOptions.method ?? "GET",
+        headers,
+        redirect: "follow",
+        credentials: "include",
+      };
+      if (requestBody !== undefined) {
+        fetchInit.body = requestBody;
+      }
+      const response = await fetch(targetUrl, fetchInit);
+      const bodyText = await response.text();
+      return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        bodyText,
+      };
+    }, {
+      targetUrl: requestUrl,
+      requestOptions: requestInit,
+      requestBody: body,
+    });
+
+    return new Response(result.bodyText, {
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+    }) as Response;
+  }
+
+  private async ensureBrowserPage(): Promise<{ page: Page; context: BrowserContext }> {
+    if (this.browserPage && this.browserContext) {
+      return { page: this.browserPage, context: this.browserContext };
+    }
+
+    const browser = await this.launchBrowser();
+    const context = await browser.newContext({
+      viewport: {
+        width: this.deviceProfile.viewportWidth,
+        height: this.deviceProfile.viewportHeight,
+      },
+      screen: {
+        width: this.deviceProfile.screenWidth,
+        height: this.deviceProfile.screenHeight,
+      },
+      deviceScaleFactor: this.deviceProfile.deviceScaleFactor,
+      locale: this.deviceProfile.locale,
+      timezoneId: this.deviceProfile.timezoneId,
+      userAgent: this.deviceProfile.userAgent,
+      isMobile: this.deviceProfile.isMobile,
+      hasTouch: this.deviceProfile.hasTouch,
+      extraHTTPHeaders: {
+        "accept-language": this.deviceProfile.acceptLanguage,
+        "sec-ch-ua-mobile": this.deviceProfile.isMobile ? "?1" : "?0",
+      },
+    });
+    const page = await context.newPage();
+    this.browserContext = context;
+    this.browserPage = page;
+    return { page, context };
+  }
+
+  private async launchBrowser(): Promise<Browser> {
+    const executablePath = this.resolveBrowserExecutablePath();
+    if (!executablePath) {
+      throw new Error("未找到可用于浏览器传输的浏览器安装路径");
+    }
+    return chromium.launch({
+      headless: true,
+      executablePath,
+      proxy: resolveProxyUrl() ? { server: resolveProxyUrl() } : undefined,
+    });
+  }
+
+  private resolveBrowserExecutablePath(): string | undefined {
+    const candidates = [
+      process.env.SENTINEL_BROWSER_PATH,
+      process.env.OPENAI_BROWSER_PATH,
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    ].filter(Boolean) as string[];
+
+    return candidates.find((candidate) => existsSync(candidate));
+  }
+
+  private serializeRequestBody(bodyValue: BodyInit | null | undefined): string | undefined {
+    if (bodyValue == null) {
+      return undefined;
+    }
+    if (typeof bodyValue === "string") {
+      return bodyValue;
+    }
+    if (bodyValue instanceof URLSearchParams) {
+      return bodyValue.toString();
+    }
+    if (bodyValue instanceof Uint8Array) {
+      return Buffer.from(bodyValue).toString("utf8");
+    }
+    if (ArrayBuffer.isView(bodyValue)) {
+      return Buffer.from(bodyValue.buffer, bodyValue.byteOffset, bodyValue.byteLength).toString("utf8");
+    }
+    if (bodyValue instanceof ArrayBuffer) {
+      return Buffer.from(bodyValue).toString("utf8");
+    }
+    return String(bodyValue);
   }
 
   private describeRetryTarget(input: Parameters<FetchLike>[0]): string {
