@@ -40,6 +40,7 @@ type FetchLike = typeof fetch;
 const DEFAULT_INSECURE_TLS = true;
 const FETCH_RETRY_COUNT = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
+const SMS_NUMBER_ACQUIRE_INTERVAL_MS = 1000;
 const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
 const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
 
@@ -925,6 +926,10 @@ export class OpenAIClient {
 
     for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
       this.throwIfCancelled();
+      if (phoneIdx > 1) {
+        console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 等待 ${SMS_NUMBER_ACQUIRE_INTERVAL_MS}ms 后再次获取号码`);
+        await sleep(SMS_NUMBER_ACQUIRE_INTERVAL_MS, this.shouldCancel);
+      }
       console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从短信平台获取号码`);
       let lease: ActivationLease;
       try {

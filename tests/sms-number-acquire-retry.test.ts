@@ -3,6 +3,7 @@ import { OpenAIClient } from "../src/core/openai.js";
 import type { ActivationLease, ISMSActivationBroker } from "../src/core/sms/activation-broker.js";
 
 let acquireAttempts = 0;
+const acquireTimes: number[] = [];
 let sendPhoneOtpCalls = 0;
 let markAsSucceedCalls = 0;
 
@@ -21,6 +22,7 @@ const lease: ActivationLease = {
 const smsBroker: ISMSActivationBroker = {
   async getActivation() {
     acquireAttempts += 1;
+    acquireTimes.push(Date.now());
     if (acquireAttempts === 1) {
       throw new Error("SMSBower getNumber failed: NO_NUMBERS");
     }
@@ -59,6 +61,7 @@ try {
   const nextUrl = await (client as unknown as { runSmsVerification: () => Promise<string> }).runSmsVerification();
   assert.equal(nextUrl, "https://auth.openai.com/continue");
   assert.equal(acquireAttempts, 2);
+  assert.ok(acquireTimes[1] - acquireTimes[0] >= 900);
   assert.equal(sendPhoneOtpCalls, 1);
   assert.equal(markAsSucceedCalls, 1);
 } finally {
