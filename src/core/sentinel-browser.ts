@@ -1,7 +1,8 @@
 import {existsSync} from "node:fs";
 import {chromium, type Browser, type BrowserContext, type Page} from "playwright-core";
-import {appConfig} from "./config.js";
+import {resolveOpenAIProxyUrl} from "./config.js";
 import type {DeviceProfile} from "./device-profile.js";
+import {normalizeBrowserProxyUrl} from "./proxy.js";
 
 const SENTINEL_FRAME_URL = "https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6";
 const SENTINEL_COOKIE_DOMAIN = "sentinel.openai.com";
@@ -11,6 +12,7 @@ let browserPromise: Promise<Browser> | null = null;
 let contextPromise: Promise<BrowserContext> | null = null;
 let pagePromise: Promise<Page> | null = null;
 let contextProfileKey = "";
+let browserProxyUrl = "";
 
 declare global {
     interface Window {
@@ -37,13 +39,22 @@ function resolveBrowserExecutablePath(): string {
 }
 
 async function getBrowser(): Promise<Browser> {
+  const proxyUrl = resolveOpenAIProxyUrl();
+  if (browserPromise && browserProxyUrl !== proxyUrl) {
+    await closeCurrentContext();
+    const browser = await browserPromise.catch(() => null);
+    browserPromise = null;
+    await browser?.close().catch(() => undefined);
+  }
   if (!browserPromise) {
+    browserProxyUrl = proxyUrl;
+    const browserProxyUrlForLaunch = normalizeBrowserProxyUrl(proxyUrl);
     browserPromise = chromium.launch({
       headless: true,
       executablePath: resolveBrowserExecutablePath(),
-      proxy: appConfig.defaultProxyUrl
+      proxy: browserProxyUrlForLaunch
         ? {
-          server: appConfig.defaultProxyUrl,
+          server: browserProxyUrlForLaunch,
         }
         : undefined,
     });

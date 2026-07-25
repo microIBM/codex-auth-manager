@@ -2,13 +2,14 @@ import { cpus } from "node:os";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Buffer } from "node:buffer";
-import { fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit } from "undici";
-import { appConfig } from "../core/config.js";
+import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
+import { appConfig, resolveOpenAIProxyUrl } from "../core/config.js";
 import { REAUTH_ELIGIBLE_STATUS_CODES } from "../shared/constants.js";
 import { AUTH_OAUTH_TOKEN_URLS, DEFAULT_CLIENT_ID, DEFAULT_USER_AGENT } from "../core/constants.js";
 import { buildBrowserHeaders, defaultDeviceProfile, type DeviceProfile } from "../core/device-profile.js";
 import { normalizeEmailAddress } from "../core/email-normalize.js";
 import type { SavedAuthRecord } from "../core/openai.js";
+import { createProxyDispatcher, summarizeProxyUrl, type ProxyDiagnostic } from "../core/proxy.js";
 import { getDb, currentTimestamp, getAuthFileContent, updateAuthFileContent, type AccountRow, type AuthFileRow } from "./db.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { buildZip, type ZipEntry } from "./zip.js";
@@ -58,13 +59,6 @@ interface ProbeResponse {
   status: number;
   body: string;
   requestContext: UsageProbeRequestContext;
-}
-
-interface ProxyDiagnostic {
-  configured: boolean;
-  protocol?: string;
-  host?: string;
-  port?: string;
 }
 
 interface UsageProbeRequestContext {
@@ -145,27 +139,6 @@ function maskPath(filePath: string): string {
   return path.relative(process.cwd(), filePath) || filePath;
 }
 
-function summarizeProxyUrl(value: string | undefined): ProxyDiagnostic {
-  const text = String(value ?? "").trim();
-  if (!text) {
-    return { configured: false };
-  }
-  try {
-    const url = new URL(text);
-    return {
-      configured: true,
-      protocol: url.protocol.replace(/:$/, ""),
-      host: url.hostname,
-      port: url.port || undefined,
-    };
-  } catch {
-    return {
-      configured: true,
-      host: text.length > 16 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text,
-    };
-  }
-}
-
 export function buildUsageProbeRequestContext(accountId: string, deviceProfile?: DeviceProfile): UsageProbeRequestContext {
   const profile = deviceProfile ?? defaultDeviceProfile();
   return {
@@ -174,7 +147,7 @@ export function buildUsageProbeRequestContext(accountId: string, deviceProfile?:
     acceptLanguage: profile.acceptLanguage,
     deviceProfileId: profile.id,
     deviceFamily: profile.family,
-    proxy: summarizeProxyUrl(appConfig.defaultProxyUrl),
+    proxy: summarizeProxyUrl(resolveOpenAIProxyUrl()),
     accountIdPresent: Boolean(accountId),
   };
 }
@@ -249,15 +222,8 @@ function parseJson<T>(raw: string): T | null {
   }
 }
 
-function buildDispatcher(proxyUrl = appConfig.defaultProxyUrl): Dispatcher {
-  return proxyUrl
-    ? new ProxyAgent({
-      uri: proxyUrl,
-      requestTls: { rejectUnauthorized: false },
-    })
-    : new Agent({
-      connect: { rejectUnauthorized: false },
-    });
+function buildDispatcher(proxyUrl = resolveOpenAIProxyUrl()) {
+  return createProxyDispatcher(proxyUrl, true);
 }
 
 function extractMessage(rawBody: string): string {

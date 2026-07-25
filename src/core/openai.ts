@@ -1,17 +1,14 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import net from "node:net";
 import { stdin as input, stdout as output } from "node:process";
-import tls from "node:tls";
 import { URLSearchParams } from "node:url";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici";
-import { SocksClient } from "socks";
+import { setGlobalDispatcher } from "undici";
 import makeFetchCookie from "fetch-cookie";
 import { CookieJar } from "tough-cookie";
-import { appConfig } from "./config.js";
+import { resolveOpenAIProxyUrl } from "./config.js";
 import { shouldAutoUploadAuthToCLIProxyAPI, uploadAuthFileToCLIProxyAPI } from "./cliproxyapi.js";
 import { shouldAutoUploadAuthToSub2API, uploadAuthFileToSub2API } from "./sub2api.js";
 import { buildBrowserHeaders, defaultDeviceProfile, type DeviceProfile, getDeviceClientHints } from "./device-profile.js";
@@ -33,6 +30,7 @@ import {
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
 import { fetchSentinelToken } from "./sentinel.js";
 import { pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
+import { createProxyDispatcher, normalizeBrowserProxyUrl } from "./proxy.js";
 import type { ActivationLease, ISMSActivationBroker } from "./sms/activation-broker.js";
 
 type FetchLike = typeof fetch;
@@ -45,11 +43,7 @@ const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
 const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
 
 function resolveProxyUrl(): string {
-  return appConfig.defaultProxyUrl;
-}
-
-function shouldAllowInsecureTLS(): boolean {
-  return DEFAULT_INSECURE_TLS;
+  return resolveOpenAIProxyUrl();
 }
 
 function formatCommandAuthDirName(date: Date): string {
@@ -63,90 +57,6 @@ function formatCommandAuthDirName(date: Date): string {
     `${date.getMinutes()}`.padStart(2, "0"),
   ];
   return `${parts.join("-")} ${timeParts.join("-")}`;
-}
-
-function createDispatcher(proxyUrl: string, allowInsecureTLS: boolean): Dispatcher {
-  if (!proxyUrl) {
-    return new Agent({
-      connect: {
-        rejectUnauthorized: !allowInsecureTLS,
-      },
-    });
-  }
-
-  const parsedProxyUrl = new URL(proxyUrl);
-  if (parsedProxyUrl.protocol === "http:" || parsedProxyUrl.protocol === "https:") {
-    return new ProxyAgent({
-      uri: proxyUrl,
-      requestTls: {
-        rejectUnauthorized: !allowInsecureTLS,
-      },
-    });
-  }
-
-  if (isSocksProtocol(parsedProxyUrl.protocol)) {
-    const connect = ((options, callback) => {
-      void createSocksSocket(parsedProxyUrl, options as unknown as Record<string, unknown>, allowInsecureTLS)
-        .then((socket) => callback(null, socket))
-        .catch((error) => callback(error instanceof Error ? error : new Error(String(error)), null));
-    }) as NonNullable<ConstructorParameters<typeof Agent>[0]>["connect"];
-
-    return new Agent({
-      connect,
-    });
-  }
-
-  throw new Error(`不支持的代理协议: ${parsedProxyUrl.protocol}`);
-}
-
-function isSocksProtocol(protocol: string): boolean {
-  return ["socks4:", "socks4a:", "socks5:", "socks5h:"].includes(protocol);
-}
-
-async function createSocksSocket(
-  proxyUrl: URL,
-  options: Record<string, unknown>,
-  allowInsecureTLS: boolean,
-): Promise<net.Socket> {
-  const destinationHost = String(options.hostname ?? "");
-  const rawPort = options.port;
-  const destinationPort =
-    rawPort === "" || rawPort == null
-      ? (options.protocol === "https:" ? 443 : 80)
-      : Number(rawPort);
-  const proxyPort = Number(proxyUrl.port || (proxyUrl.protocol.startsWith("socks5") ? 1080 : 1080));
-  const proxyType = proxyUrl.protocol.startsWith("socks4") ? 4 : 5;
-
-  const connection = await SocksClient.createConnection({
-    proxy: {
-      host: proxyUrl.hostname,
-      port: proxyPort,
-      type: proxyType,
-      userId: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
-      password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined,
-    },
-    command: "connect",
-    destination: {
-      host: destinationHost,
-      port: destinationPort,
-    },
-  });
-
-  const socket = connection.socket;
-  if (options.protocol !== "https:") {
-    return socket;
-  }
-
-  return await new Promise<net.Socket>((resolve, reject) => {
-    const tlsSocket = tls.connect({
-      socket,
-      host: String(options.servername ?? destinationHost),
-      servername: String(options.servername ?? destinationHost),
-      rejectUnauthorized: !allowInsecureTLS,
-    });
-    tlsSocket.once("secureConnect", () => resolve(tlsSocket));
-    tlsSocket.once("error", reject);
-  });
 }
 
 interface ContinueResponse {
@@ -292,7 +202,7 @@ export class OpenAIClient {
     this.progressCallback = options.progressCallback;
     this.signupScreenHint = options.signupScreenHint?.trim() || "login_or_signup";
     this.jar = new CookieJar();
-    setGlobalDispatcher(createDispatcher(resolveProxyUrl(), shouldAllowInsecureTLS()));
+    setGlobalDispatcher(createProxyDispatcher(resolveProxyUrl(), DEFAULT_INSECURE_TLS));
     const cookieFetch = makeFetchCookie(fetch, this.jar) as FetchLike;
     this.fetch = ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) =>
       this.fetchWithRetry(cookieFetch, input, init)) as FetchLike;
@@ -1724,10 +1634,11 @@ export class OpenAIClient {
     if (!executablePath) {
       throw new Error("未找到可用于浏览器传输的浏览器安装路径");
     }
+    const proxyUrl = normalizeBrowserProxyUrl(resolveProxyUrl());
     return chromium.launch({
       headless: true,
       executablePath,
-      proxy: resolveProxyUrl() ? { server: resolveProxyUrl() } : undefined,
+      proxy: proxyUrl ? { server: proxyUrl } : undefined,
     });
   }
 

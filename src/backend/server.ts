@@ -158,7 +158,7 @@ app.put("/api/config", async (request) => {
   return updateConfigFromUi((request.body ?? {}) as Record<string, unknown>);
 });
 app.post("/api/config/proxy-test", async (request) => {
-  return testProxyConnection((request.body ?? {}) as {proxyUrl?: unknown; targetUrl?: unknown});
+  return testProxyConnection((request.body ?? {}) as {proxyUrl?: unknown; targetUrl?: unknown; proxyKind?: unknown});
 });
 
 app.get("/api/dashboard", async () => {

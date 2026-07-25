@@ -20,6 +20,8 @@ interface AppConfigInput {
   cloudflareApiBaseUrl?: unknown;
   cloudflareApiKey?: unknown;
   defaultProxyUrl?: unknown;
+  residentialProxyEnabled?: unknown;
+  residentialProxyUrl?: unknown;
   hotmailMode?: unknown;
   smsProvider?: unknown;
   heroSMSApiKey?: unknown;
@@ -72,6 +74,8 @@ export interface AppConfig {
   cloudflareApiBaseUrl: string;
   cloudflareApiKey: string;
   defaultProxyUrl: string;
+  residentialProxyEnabled: boolean;
+  residentialProxyUrl: string;
   hotmailMode: HotmailMode;
   smsProvider: SmsProviderName;
   heroSMSApiKey?: string;
@@ -124,6 +128,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   cloudflareApiBaseUrl: "",
   cloudflareApiKey: "",
   defaultProxyUrl: "http://127.0.0.1:10808",
+  residentialProxyEnabled: false,
+  residentialProxyUrl: "",
   hotmailMode: "graph",
   smsProvider: "hero-sms",
   heroSMSApiKey: "",
@@ -167,6 +173,7 @@ export const SECRET_CONFIG_KEYS = new Set<keyof AppConfig>([
   "gptMailApiKey",
   "2925Password",
   "cloudflareApiKey",
+  "residentialProxyUrl",
   "heroSMSApiKey",
   "grizzlySMSApiKey",
   "smsBowerApiKey",
@@ -312,6 +319,11 @@ function normalizeConfig(parsed: AppConfigInput): AppConfig {
     cloudflareApiBaseUrl: normalizeString(parsed.cloudflareApiBaseUrl, DEFAULT_CONFIG.cloudflareApiBaseUrl),
     cloudflareApiKey: normalizeString(parsed.cloudflareApiKey, DEFAULT_CONFIG.cloudflareApiKey),
     defaultProxyUrl: normalizeString(parsed.defaultProxyUrl, DEFAULT_CONFIG.defaultProxyUrl),
+    residentialProxyEnabled: normalizeBoolean(
+      parsed.residentialProxyEnabled,
+      DEFAULT_CONFIG.residentialProxyEnabled,
+    ),
+    residentialProxyUrl: normalizeString(parsed.residentialProxyUrl, DEFAULT_CONFIG.residentialProxyUrl),
     hotmailMode: normalizeHotmailMode(parsed.hotmailMode),
     smsProvider: normalizeSmsProvider(parsed.smsProvider),
     heroSMSApiKey: normalizeString(parsed.heroSMSApiKey, DEFAULT_CONFIG.heroSMSApiKey ?? ""),
@@ -471,4 +483,12 @@ export function reloadAppConfig(): AppConfig {
   const next = loadConfig();
   Object.assign(appConfig, next);
   return appConfig;
+}
+
+export function resolveOpenAIProxyUrl(config: Pick<AppConfig, "defaultProxyUrl" | "residentialProxyEnabled" | "residentialProxyUrl"> = appConfig): string {
+  const residentialProxyUrl = String(config.residentialProxyUrl ?? "").trim();
+  if (config.residentialProxyEnabled && residentialProxyUrl) {
+    return residentialProxyUrl;
+  }
+  return String(config.defaultProxyUrl ?? "").trim();
 }

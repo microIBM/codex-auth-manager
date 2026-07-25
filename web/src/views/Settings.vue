@@ -23,15 +23,20 @@ const smsProviderOptions = [
   {label: "GrizzlySMS", value: "grizzly-sms"},
   {label: "SMSBower", value: "smsbower"},
 ];
-const testingProxy = ref(false);
-const proxyTestResult = ref<{
+interface ProxyTestResult {
   ok: boolean;
   proxyUrl: string;
   targetUrl: string;
   status: number | null;
   elapsedMs: number;
   message: string;
-} | null>(null);
+  exitIp?: string;
+  location?: string;
+}
+const testingProxy = ref(false);
+const testingResidentialProxy = ref(false);
+const proxyTestResult = ref<ProxyTestResult | null>(null);
+const residentialProxyTestResult = ref<ProxyTestResult | null>(null);
 
 const loopDelaySeconds = computed({
   get: () => Math.max(0, Math.round(Number(config.loopDelayMs ?? 0) / 1000)),
@@ -46,6 +51,7 @@ const secretKeys = [
   "gptMailApiKey",
   "2925Password",
   "cloudflareApiKey",
+  "residentialProxyUrl",
   "heroSMSApiKey",
   "grizzlySMSApiKey",
   "smsBowerApiKey",
@@ -192,7 +198,7 @@ async function testDefaultProxy() {
   testingProxy.value = true;
   proxyTestResult.value = null;
   try {
-    proxyTestResult.value = await apiSend<typeof proxyTestResult.value>("/api/config/proxy-test", "POST", {
+    proxyTestResult.value = await apiSend<ProxyTestResult>("/api/config/proxy-test", "POST", {
       proxyUrl: config.defaultProxyUrl || "",
     });
     if (proxyTestResult.value?.ok) {
@@ -204,6 +210,26 @@ async function testDefaultProxy() {
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
     testingProxy.value = false;
+  }
+}
+
+async function testResidentialProxy() {
+  testingResidentialProxy.value = true;
+  residentialProxyTestResult.value = null;
+  try {
+    residentialProxyTestResult.value = await apiSend<ProxyTestResult>("/api/config/proxy-test", "POST", {
+      proxyKind: "residential",
+      proxyUrl: secretInputs.residentialProxyUrl || undefined,
+    });
+    if (residentialProxyTestResult.value?.ok) {
+      ElMessage.success(`家庭住宅 IP 可用，耗时 ${residentialProxyTestResult.value.elapsedMs}ms`);
+    } else {
+      ElMessage.error(residentialProxyTestResult.value?.message || "家庭住宅 IP 不可用");
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    testingResidentialProxy.value = false;
   }
 }
 
@@ -324,9 +350,43 @@ onMounted(load);
                 <div class="font-medium">{{ proxyTestResult.message }}</div>
                 <div class="mt-1 text-xs opacity-80">
                   目标 {{ proxyTestResult.targetUrl }}；状态 {{ proxyTestResult.status ?? "-" }}；耗时 {{ proxyTestResult.elapsedMs }}ms
+                  <template v-if="proxyTestResult.exitIp">；出口 {{ proxyTestResult.exitIp }}</template>
+                  <template v-if="proxyTestResult.location">；地区 {{ proxyTestResult.location }}</template>
                 </div>
               </div>
             </el-form-item>
+            <div class="mb-4 rounded-lg border border-[var(--el-border-color-light)] bg-[var(--el-fill-color-lighter)] px-3 py-3">
+              <div class="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium text-[var(--el-text-color-primary)]">家庭住宅 IP</div>
+                  <div class="text-xs text-[var(--el-text-color-secondary)]">开启后 OpenAI 注册、授权、token refresh、usage 检查和 sentinel 优先使用住宅代理。</div>
+                </div>
+                <el-switch v-model="config.residentialProxyEnabled" />
+              </div>
+              <el-form-item label="住宅代理 URL" class="mb-0">
+                <el-input
+                  v-model="secretInputs.residentialProxyUrl"
+                  type="password"
+                  show-password
+                  placeholder="http://user:pass@host:port 或 socks5h://user:pass@host:port"
+                >
+                  <template #append>
+                    <el-button :icon="Connection" :loading="testingResidentialProxy" @click="testResidentialProxy">测试</el-button>
+                  </template>
+                </el-input>
+                <div class="mt-1 text-xs text-[var(--el-text-color-secondary)]">
+                  {{ secretPlaceholder("residentialProxyUrl") }}；支持 http/https/socks4/socks5/socks5h。
+                </div>
+                <div v-if="residentialProxyTestResult" class="mt-2 w-full rounded-lg border px-3 py-2 text-sm" :class="residentialProxyTestResult.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'">
+                  <div class="font-medium">{{ residentialProxyTestResult.message }}</div>
+                  <div class="mt-1 text-xs opacity-80">
+                    目标 {{ residentialProxyTestResult.targetUrl }}；状态 {{ residentialProxyTestResult.status ?? "-" }}；耗时 {{ residentialProxyTestResult.elapsedMs }}ms
+                    <template v-if="residentialProxyTestResult.exitIp">；出口 {{ residentialProxyTestResult.exitIp }}</template>
+                    <template v-if="residentialProxyTestResult.location">；地区 {{ residentialProxyTestResult.location }}</template>
+                  </div>
+                </div>
+              </el-form-item>
+            </div>
             <el-row :gutter="12">
               <el-col :span="12">
                 <el-form-item label="默认密码">

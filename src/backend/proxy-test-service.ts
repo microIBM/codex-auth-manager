@@ -1,7 +1,10 @@
-import {fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit} from "undici";
+import {fetch as undiciFetch, type RequestInit as UndiciRequestInit} from "undici";
+import {appConfig, resolveOpenAIProxyUrl} from "../core/config.js";
+import {createProxyDispatcher, maskProxyUrl} from "../core/proxy.js";
 
 const DEFAULT_TEST_URL = "https://chatgpt.com/cdn-cgi/trace";
 const PROXY_TEST_TIMEOUT_MS = 10000;
+type ProxyTestKind = "default" | "residential";
 
 export interface ProxyTestResult {
   ok: boolean;
@@ -10,18 +13,8 @@ export interface ProxyTestResult {
   status: number | null;
   elapsedMs: number;
   message: string;
-}
-
-function buildDispatcher(proxyUrl: string): Dispatcher {
-  const normalized = proxyUrl.trim();
-  return normalized
-    ? new ProxyAgent({
-      uri: normalized,
-      requestTls: {rejectUnauthorized: false},
-    })
-    : new Agent({
-      connect: {rejectUnauthorized: false},
-    });
+  exitIp?: string;
+  location?: string;
 }
 
 function normalizeTestUrl(value: unknown): string {
@@ -34,6 +27,44 @@ function normalizeTestUrl(value: unknown): string {
     throw new Error("测试地址只支持 http/https");
   }
   return url.toString();
+}
+
+function normalizeProxyKind(value: unknown): ProxyTestKind {
+  return value === "residential" ? "residential" : "default";
+}
+
+function resolveTestProxyUrl(input: {proxyUrl?: unknown; proxyKind?: unknown}): {proxyKind: ProxyTestKind; proxyUrl: string} {
+  const proxyUrl = typeof input.proxyUrl === "string" ? input.proxyUrl.trim() : "";
+  const proxyKind = normalizeProxyKind(input.proxyKind);
+  if (proxyUrl) {
+    return {proxyKind, proxyUrl};
+  }
+  if (proxyKind === "residential") {
+    return {proxyKind, proxyUrl: String(appConfig.residentialProxyUrl ?? "").trim()};
+  }
+  return {proxyKind, proxyUrl: resolveOpenAIProxyUrl()};
+}
+
+function parseTraceValue(rawBody: string, key: string): string | undefined {
+  const prefix = `${key}=`;
+  return rawBody
+    .split(/\r?\n/)
+    .find((line) => line.startsWith(prefix))
+    ?.slice(prefix.length)
+    .trim() || undefined;
+}
+
+function parseExitIp(rawBody: string): string | undefined {
+  const traceIp = parseTraceValue(rawBody, "ip");
+  if (traceIp) {
+    return traceIp;
+  }
+  try {
+    const payload = JSON.parse(rawBody) as {ip?: unknown};
+    return typeof payload.ip === "string" ? payload.ip : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function formatErrorMessage(error: unknown): string {
@@ -50,38 +81,52 @@ function formatErrorMessage(error: unknown): string {
   return [error.message, causeMessage, causeCode].filter(Boolean).join(" ");
 }
 
-export async function testProxyConnection(input: {proxyUrl?: unknown; targetUrl?: unknown}): Promise<ProxyTestResult> {
-  const proxyUrl = typeof input.proxyUrl === "string" ? input.proxyUrl.trim() : "";
+export async function testProxyConnection(input: {proxyUrl?: unknown; targetUrl?: unknown; proxyKind?: unknown}): Promise<ProxyTestResult> {
+  const {proxyKind, proxyUrl} = resolveTestProxyUrl(input);
   const targetUrl = normalizeTestUrl(input.targetUrl);
   const started = Date.now();
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), PROXY_TEST_TIMEOUT_MS);
 
+  if (proxyKind === "residential" && !proxyUrl) {
+    clearTimeout(timeout);
+    return {
+      ok: false,
+      proxyUrl: "",
+      targetUrl,
+      status: null,
+      elapsedMs: Date.now() - started,
+      message: "家庭住宅代理未配置",
+    };
+  }
+
   try {
     const response = await undiciFetch(targetUrl, {
       method: "GET",
-      dispatcher: buildDispatcher(proxyUrl),
+      dispatcher: createProxyDispatcher(proxyUrl, true),
       signal: abortController.signal,
       headers: {
         "user-agent": "codex-auth-manager/proxy-test",
       },
     } satisfies UndiciRequestInit);
-    await response.body?.cancel();
+    const rawBody = await response.text();
     const elapsedMs = Date.now() - started;
     return {
       ok: response.ok,
-      proxyUrl,
+      proxyUrl: maskProxyUrl(proxyUrl),
       targetUrl,
       status: response.status,
       elapsedMs,
       message: response.ok ? "代理可用" : `请求完成但状态异常: ${response.status}`,
+      exitIp: parseExitIp(rawBody),
+      location: parseTraceValue(rawBody, "loc"),
     };
   } catch (error) {
     const elapsedMs = Date.now() - started;
     const aborted = error instanceof Error && error.name === "AbortError";
     return {
       ok: false,
-      proxyUrl,
+      proxyUrl: maskProxyUrl(proxyUrl),
       targetUrl,
       status: null,
       elapsedMs,
