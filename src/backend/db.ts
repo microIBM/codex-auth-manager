@@ -490,6 +490,7 @@ function migrate(database: BetterSqliteDatabase): void {
 
   migrateAuthFileContentToDb(database);
   migrateLowercaseEmails(database);
+  repairHtmlUsageProbeDeactivationMisclassifications(database);
   backfillPlatformBindings(database);
 
   addColumnIfMissing(database, "mail_sources", "mail_type_id", "INTEGER REFERENCES mail_types(id) ON DELETE SET NULL");
@@ -586,6 +587,28 @@ function addColumnIfMissing(database: BetterSqliteDatabase, table: string, colum
     return;
   }
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function repairHtmlUsageProbeDeactivationMisclassifications(database: BetterSqliteDatabase): void {
+  const result = database.prepare(`
+    UPDATE accounts
+    SET status = 'abnormal',
+        status_code = 'account_abnormal',
+        status_label = '账号状态异常',
+        updated_at = @updated_at
+    WHERE status_code = 'account_deactivated'
+      AND (
+        LOWER(TRIM(COALESCE(last_error, ''))) LIKE '<!doctype html%'
+        OR LOWER(TRIM(COALESCE(last_error, ''))) LIKE '<html%'
+        OR (
+          LOWER(COALESCE(last_error, '')) LIKE '%<head%'
+          AND LOWER(COALESCE(last_error, '')) LIKE '%<meta%'
+        )
+      )
+  `).run({updated_at: now()});
+  if (result.changes > 0) {
+    console.log(`[migration] repaired ${result.changes} HTML usage probe deactivation misclassifications`);
+  }
 }
 
 function migrateLowercaseEmails(database: BetterSqliteDatabase): void {

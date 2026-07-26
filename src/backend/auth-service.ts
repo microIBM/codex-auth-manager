@@ -243,6 +243,14 @@ function extractMessage(rawBody: string): string {
   );
 }
 
+export function isHtmlLikeUsageProbeResponse(value: string | null | undefined): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized.startsWith("<!doctype html") ||
+    normalized.startsWith("<html") ||
+    (normalized.includes("<html") && normalized.includes("<head")) ||
+    (normalized.includes("<head") && normalized.includes("<meta"));
+}
+
 function shouldMoveTo401(message: string): boolean {
   return message.toLowerCase().includes("deactivated");
 }
@@ -320,11 +328,12 @@ function extractUsageWindows(payload: UsagePayload | null, plan: string): Accoun
   ];
 }
 
-function deriveStatus(summary: {
+export function deriveStatus(summary: {
   ok: boolean;
   rawStatus: number;
   credentialType: "codex_auth" | "access_token_only" | "none";
   note: string;
+  rawBody?: string;
   limitReached: boolean | null;
   remainingPercent: number | null;
   refreshed: boolean;
@@ -348,7 +357,10 @@ function deriveStatus(summary: {
   if (summary.rawStatus === 401 || note.includes("refresh") || note.includes("token") || note.includes("expired") || note.includes("缺少 refresh_token")) {
     return { statusCode: "credential_expired", statusLabel: "凭据过期" };
   }
-  if (summary.rawStatus === 403 || note.includes("deactivated") || note.includes("forbidden")) {
+  if (isHtmlLikeUsageProbeResponse(summary.note) || isHtmlLikeUsageProbeResponse(summary.rawBody)) {
+    return { statusCode: "account_abnormal", statusLabel: "账号状态异常" };
+  }
+  if (note.includes("account_deactivated") || note.includes("deactivated")) {
     return { statusCode: "account_deactivated", statusLabel: "账号已被封禁" };
   }
   return { statusCode: "account_abnormal", statusLabel: "账号状态异常" };
@@ -669,6 +681,7 @@ export async function summarizeAuthFile(authFileId: number, contentJson: string,
     rawStatus: probe.status,
     credentialType,
     note: probe.status === 200 ? "请求成功" : message,
+    rawBody: probe.body,
     limitReached,
     remainingPercent,
     refreshed,
@@ -1301,8 +1314,8 @@ export async function checkAccount(accountId: number, forceRefreshOrOptions: boo
   const triggerAutoReauth = Boolean(options.triggerAutoReauth);
 
   // 已封禁账号不执行任何操作
-  const accountRow = getDb().prepare("SELECT status_code FROM accounts WHERE id = ?").get(accountId) as { status_code: string | null } | undefined;
-  if (accountRow?.status_code === "account_deactivated") {
+  const accountRow = getDb().prepare("SELECT status_code, last_error FROM accounts WHERE id = ?").get(accountId) as { status_code: string | null; last_error: string | null } | undefined;
+  if (accountRow?.status_code === "account_deactivated" && !isHtmlLikeUsageProbeResponse(accountRow.last_error)) {
     return {
       file: "",
       email: "",
