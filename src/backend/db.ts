@@ -1,7 +1,10 @@
 import {copyFileSync, existsSync, mkdirSync, readFileSync, statSync} from "node:fs";
+import {createRequire} from "node:module";
 import path from "node:path";
-import Database from "better-sqlite3";
+import type {Database as BetterSqliteDatabase} from "better-sqlite3";
 import {normalizeEmailAddress} from "../core/email-normalize.js";
+
+const require = createRequire(path.join(process.cwd(), "package.json"));
 
 export const DATA_DIR = path.resolve(process.cwd(), "data");
 const LEGACY_DB_BASENAME = `${["codex", "register"].join("-")}.db`;
@@ -186,13 +189,49 @@ export interface CredentialSyncEventRow {
     created_at: string;
 }
 
-let db: Database.Database | null = null;
+type BetterSqliteConstructor = new (filename: string) => BetterSqliteDatabase;
+
+let DatabaseConstructor: BetterSqliteConstructor | null = null;
+let db: BetterSqliteDatabase | null = null;
 
 function now(): string {
   return new Date().toISOString();
 }
 
-export function getDb(): Database.Database {
+function formatSqliteDriverError(error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error([
+    "无法加载 SQLite 原生驱动 better-sqlite3。",
+    "better-sqlite3 现在是 optionalDependency，因此 npm install 可以在旧 Linux 上继续完成，但运行 Web 管理台前仍需要可用的 SQLite 原生驱动。",
+    "如果你使用 CentOS 7 / RHEL 7，常见原因是系统 libstdc++ 太旧或 g++ 不支持 C++14。",
+    "可执行以下命令后重新安装或重建依赖：",
+    "yum install -y centos-release-scl",
+    "yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ make python3",
+    "scl enable devtoolset-11 bash",
+    "npm rebuild better-sqlite3 --build-from-source",
+    `原始错误: ${detail}`,
+  ].join("\n"));
+}
+
+function getDatabaseConstructor(): BetterSqliteConstructor {
+  if (DatabaseConstructor) {
+    return DatabaseConstructor;
+  }
+
+  try {
+    const moduleValue = require("better-sqlite3") as BetterSqliteConstructor | {default?: BetterSqliteConstructor};
+    const constructor = typeof moduleValue === "function" ? moduleValue : moduleValue.default;
+    if (typeof constructor !== "function") {
+      throw new Error("better-sqlite3 did not export a constructor");
+    }
+    DatabaseConstructor = constructor;
+    return constructor;
+  } catch (error) {
+    throw formatSqliteDriverError(error);
+  }
+}
+
+export function getDb(): BetterSqliteDatabase {
   if (db) {
     return db;
   }
@@ -201,6 +240,7 @@ export function getDb(): Database.Database {
   if (!existsSync(DB_PATH) && existsSync(LEGACY_DB_PATH)) {
     copyFileSync(LEGACY_DB_PATH, DB_PATH);
   }
+  const Database = getDatabaseConstructor();
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
@@ -208,7 +248,7 @@ export function getDb(): Database.Database {
   return db;
 }
 
-function migrate(database: Database.Database): void {
+function migrate(database: BetterSqliteDatabase): void {
   database.exec(`
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -474,7 +514,7 @@ function migrate(database: Database.Database): void {
   insertDefault.run("scheduler.lastRunStatus", "never", now());
 }
 
-function seedMailTypes(database: Database.Database): void {
+function seedMailTypes(database: BetterSqliteDatabase): void {
   const timestamp = now();
   const rows = [
     ["hotmail_graph", "hotmail", "Hotmail / Outlook", "graph", "outlook.com, hotmail.com", 1, 1, 10],
@@ -512,7 +552,7 @@ function seedMailTypes(database: Database.Database): void {
   database.prepare("UPDATE mail_types SET enabled = 0, updated_at = ? WHERE key = 'hotmail_xiongmaodian_token' OR subtype = 'xiongmaodian_token'").run(timestamp);
 }
 
-function migrateMailTypeLinks(database: Database.Database): void {
+function migrateMailTypeLinks(database: BetterSqliteDatabase): void {
   const timestamp = now();
   database.prepare(`
         UPDATE mail_sources
@@ -540,7 +580,7 @@ function migrateMailTypeLinks(database: Database.Database): void {
     `).run(timestamp);
 }
 
-function addColumnIfMissing(database: Database.Database, table: string, column: string, definition: string): void {
+function addColumnIfMissing(database: BetterSqliteDatabase, table: string, column: string, definition: string): void {
   const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{name: string}>;
   if (rows.some((row) => row.name === column)) {
     return;
@@ -548,7 +588,7 @@ function addColumnIfMissing(database: Database.Database, table: string, column: 
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
-function migrateLowercaseEmails(database: Database.Database): void {
+function migrateLowercaseEmails(database: BetterSqliteDatabase): void {
   const timestamp = now();
   const mergeAccount = database.transaction((targetId: number, duplicateId: number) => {
     const duplicate = database.prepare(`
@@ -712,7 +752,7 @@ function migrateLowercaseEmails(database: Database.Database): void {
   `);
 }
 
-function backfillPlatformBindings(database: Database.Database): void {
+function backfillPlatformBindings(database: BetterSqliteDatabase): void {
   const timestamp = now();
   database.prepare(`
     INSERT OR IGNORE INTO account_platform_bindings (
@@ -726,7 +766,7 @@ function backfillPlatformBindings(database: Database.Database): void {
   `).run({timestamp});
 }
 
-function migrateAuthFileContentToDb(database: Database.Database): void {
+function migrateAuthFileContentToDb(database: BetterSqliteDatabase): void {
   const rows = database.prepare(
     "SELECT id, file_path FROM auth_files WHERE content_json IS NULL OR content_json = ''",
   ).all() as Array<{id: number; file_path: string}>;
