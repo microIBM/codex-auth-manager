@@ -1,4 +1,5 @@
 // @ts-nocheck
+import {fetch as undiciFetch, Headers} from "undici";
 import {appConfig} from "../config.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
@@ -29,7 +30,7 @@ async function gmailRequest(path, query = {}) {
     url.searchParams.set(key, String(value));
   }
 
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     method: "GET",
     headers: buildAuthHeaders(),
   });
@@ -42,7 +43,7 @@ async function gmailRequest(path, query = {}) {
 }
 
 async function gmailDeleteRequest(path) {
-  const response = await fetch(`${GMAIL_API_BASE_URL}${path}`, {
+  const response = await undiciFetch(`${GMAIL_API_BASE_URL}${path}`, {
     method: "DELETE",
     headers: buildAuthHeaders(),
   });
@@ -231,4 +232,3 @@ export function createGmailProvider() {
     },
   };
 }
-

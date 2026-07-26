@@ -1,4 +1,5 @@
 import {Buffer} from "node:buffer";
+import {fetch as undiciFetch, type RequestInit as UndiciRequestInit} from "undici";
 import {normalizeEmailAddress} from "../core/email-normalize.js";
 import type {SavedAuthRecord} from "../core/openai.js";
 import type {IntegrationServiceKind} from "./db.js";
@@ -129,8 +130,8 @@ function firstEmail(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-async function fetchText(url: string, init: RequestInit, context: string): Promise<string> {
-  const response = await fetch(url, init);
+async function fetchText(url: string, init: UndiciRequestInit, context: string): Promise<string> {
+  const response = await undiciFetch(url, init);
   const rawBody = await response.text();
   if (!response.ok) {
     throw new Error(`${context}: HTTP ${response.status} ${rawBody.slice(0, 300)}`);

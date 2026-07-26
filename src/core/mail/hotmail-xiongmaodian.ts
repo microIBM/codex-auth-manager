@@ -1,3 +1,4 @@
+import {fetch as undiciFetch} from "undici";
 import type {EmailCodeProvider, EmailVerificationCodeOptions} from "../mailbox.js";
 import {
   getHotmailEmailsFile,
@@ -47,7 +48,7 @@ function parseTimestamp(date: string | undefined): number {
 
 async function fetchInbox(email: string): Promise<XmdEmail[]> {
   const url = `${API_BASE}/${encodeURIComponent(email)}/1`;
-  const response = await fetch(url);
+  const response = await undiciFetch(url);
   if (!response.ok) {
     throw new Error(`xiongmaodian fetch HTTP ${response.status}`);
   }

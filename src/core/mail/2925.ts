@@ -2,6 +2,7 @@
 import {createHash, randomBytes} from "node:crypto";
 import {mkdir, readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
+import {fetch as undiciFetch} from "undici";
 import {appConfig} from "../config.js";
 import {DEFAULT_USER_AGENT} from "../constants.js";
 import {generateEmailName} from "./generate-email-name.js";
@@ -217,7 +218,7 @@ async function login2925Mailbox() {
   const providerLoginPassword = getProviderLoginPassword();
   const traceId = randomTraceId();
   const wtc = `_wtc=WTC.2.${Date.now()}.${Date.now()}`;
-  const response = await fetch(`${WEB_LOGIN_URL}?traceId=${encodeURIComponent(traceId)}`, {
+  const response = await undiciFetch(`${WEB_LOGIN_URL}?traceId=${encodeURIComponent(traceId)}`, {
     method: "POST",
     headers: new Headers({
       Accept: "application/json, text/plain, */*",
@@ -366,7 +367,7 @@ async function fetchMailReadContent(options) {
     throw new Error("messageId 不能为空");
   }
 
-  const response = await fetch(buildMailReadURL(options), {
+  const response = await undiciFetch(buildMailReadURL(options), {
     method: "GET",
     headers: buildMailReadHeaders(options),
   });
@@ -407,7 +408,7 @@ async function fetchMailList(options) {
   }
 
   const url = buildMailListURL(options);
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     method: "GET",
     headers: buildHeaders(options),
   });
@@ -452,7 +453,7 @@ async function moveMailsToDeleted(options) {
   }
 
   const traceId = options.traceId ?? randomTraceId();
-  const response = await fetch(`${MOVE_MAILS_URL}?traceId=${encodeURIComponent(traceId)}`, {
+  const response = await undiciFetch(`${MOVE_MAILS_URL}?traceId=${encodeURIComponent(traceId)}`, {
     method: "PUT",
     headers: new Headers({
       ...Object.fromEntries(buildHeaders(options).entries()),
@@ -712,4 +713,3 @@ export function create2925Provider() {
     },
   };
 }
-

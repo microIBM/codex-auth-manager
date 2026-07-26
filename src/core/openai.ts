@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
+import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { URLSearchParams } from "node:url";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { setGlobalDispatcher } from "undici";
+import { fetch as undiciFetch, Headers, Response, setGlobalDispatcher } from "undici";
 import makeFetchCookie from "fetch-cookie";
 import { CookieJar } from "tough-cookie";
 import { resolveOpenAIProxyUrl } from "./config.js";
@@ -28,12 +29,12 @@ import {
   DEFAULT_USER_AGENT,
 } from "./constants.js";
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
-import { fetchSentinelToken } from "./sentinel.js";
+import { fetchSentinelToken, type SentinelFetch } from "./sentinel.js";
 import { pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
 import { createProxyDispatcher, normalizeBrowserProxyUrl } from "./proxy.js";
 import type { ActivationLease, ISMSActivationBroker } from "./sms/activation-broker.js";
 
-type FetchLike = typeof fetch;
+type FetchLike = typeof undiciFetch;
 
 const DEFAULT_INSECURE_TLS = true;
 const FETCH_RETRY_COUNT = 3;
@@ -203,7 +204,7 @@ export class OpenAIClient {
     this.signupScreenHint = options.signupScreenHint?.trim() || "login_or_signup";
     this.jar = new CookieJar();
     setGlobalDispatcher(createProxyDispatcher(resolveProxyUrl(), DEFAULT_INSECURE_TLS));
-    const cookieFetch = makeFetchCookie(fetch, this.jar) as FetchLike;
+    const cookieFetch = makeFetchCookie(undiciFetch as unknown as FetchLike, this.jar) as FetchLike;
     this.fetch = ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) =>
       this.fetchWithRetry(cookieFetch, input, init)) as FetchLike;
   }
@@ -798,7 +799,7 @@ export class OpenAIClient {
     return fetchSentinelToken({
       flow,
       deviceID: this.deviceID,
-      fetch: this.fetch,
+      fetch: this.fetch as unknown as SentinelFetch,
       reqEndpoint: "https://sentinel.openai.com/backend-api/sentinel/req",
       userAgent: this.userAgent,
       deviceProfile: this.deviceProfile,
@@ -966,7 +967,9 @@ export class OpenAIClient {
   private async promptEmailOtp(): Promise<string> {
     const rl = createInterface({ input, output });
     try {
-      const code = (await rl.question("请输入邮箱验证码: ")).trim();
+      const code = (await new Promise<string>((resolve) => {
+        rl.question("请输入邮箱验证码: ", resolve);
+      })).trim();
       if (!/^\d{6}$/.test(code)) {
         throw new Error(`邮箱验证码格式不正确: ${code}`);
       }
@@ -1354,7 +1357,7 @@ export class OpenAIClient {
     const query = new URLSearchParams({
       prompt: "login",
       "ext-oai-did": this.deviceID,
-      auth_session_logging_id: globalThis.crypto.randomUUID(),
+      auth_session_logging_id: randomUUID(),
       "ext-passkey-client-capabilities": "0111",
       screen_hint: "login_or_signup",
       login_hint: email,
@@ -1565,10 +1568,9 @@ export class OpenAIClient {
 
     const body = this.serializeRequestBody(init?.body);
     const result = await page.evaluate(async ({ targetUrl, requestOptions, requestBody }) => {
-      const headers = new Headers(requestOptions.headers ?? {});
       const fetchInit: RequestInit = {
         method: requestOptions.method ?? "GET",
-        headers,
+        headers: requestOptions.headers ?? {},
         redirect: "follow",
         credentials: "include",
       };
@@ -1655,7 +1657,7 @@ export class OpenAIClient {
     return candidates.find((candidate) => existsSync(candidate));
   }
 
-  private serializeRequestBody(bodyValue: BodyInit | null | undefined): string | undefined {
+  private serializeRequestBody(bodyValue: unknown): string | undefined {
     if (bodyValue == null) {
       return undefined;
     }

@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import vue from "eslint-plugin-vue";
-import tseslint from "typescript-eslint";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
+import tsParser from "@typescript-eslint/parser";
 import vueParser from "vue-eslint-parser";
 
 export default [
@@ -16,12 +17,11 @@ export default [
     ],
   },
   js.configs.recommended,
-  ...tseslint.configs.recommended,
   ...vue.configs["flat/recommended"],
   {
     files: ["src/**/*.ts", "web/src/**/*.ts", "scripts/**/*.mjs", "*.config.ts"],
     languageOptions: {
-      parser: tseslint.parser,
+      parser: tsParser,
       parserOptions: {
         sourceType: "module",
       },
@@ -39,13 +39,16 @@ export default [
         setTimeout: "readonly",
       },
     },
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+    },
   },
   {
     files: ["web/src/**/*.vue"],
     languageOptions: {
       parser: vueParser,
       parserOptions: {
-        parser: tseslint.parser,
+        parser: tsParser,
         extraFileExtensions: [".vue"],
         sourceType: "module",
       },
@@ -65,7 +68,11 @@ export default [
   },
   {
     files: ["src/**/*.ts", "web/src/**/*.{ts,vue}", "scripts/**/*.mjs", "*.config.ts"],
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+    },
     rules: {
+      ...tsPlugin.configs.recommended.rules,
       indent: ["error", 2, {"SwitchCase": 1}],
       "no-console": "off",
       "no-constant-binary-expression": "off",
@@ -74,9 +81,8 @@ export default [
       "preserve-caught-error": "off",
       "@typescript-eslint/ban-ts-comment": "off",
       "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-empty-object-type": "off",
+      "@typescript-eslint/no-empty-interface": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-unsafe-function-type": "off",
       "@typescript-eslint/no-unused-vars": ["warn", {"argsIgnorePattern": "^_", "varsIgnorePattern": "^_"}],
       "vue/multi-word-component-names": "off",
       "vue/max-attributes-per-line": "off",

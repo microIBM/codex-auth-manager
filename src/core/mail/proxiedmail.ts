@@ -1,6 +1,7 @@
 // @ts-nocheck
 import {readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
+import {fetch as undiciFetch} from "undici";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
@@ -21,7 +22,7 @@ let currentRealAddress = PROXIEDMAIL_REAL_ADDRESS;
 let accountStateLoaded = false;
 
 async function proxiedFetch(input, init = {}) {
-  return fetch(input, {
+  return undiciFetch(input, {
     ...init,
   });
 }
@@ -410,4 +411,3 @@ export function createProxiedMailProvider() {
     },
   };
 }
-

@@ -1,3 +1,4 @@
+import {fetch as undiciFetch} from "undici";
 import {appConfig} from "./config.js";
 import type {SavedAuthRecord} from "./openai.js";
 
@@ -127,7 +128,7 @@ export async function uploadAuthFileToSub2API(
   record: SavedAuthRecord,
 ): Promise<Sub2APIUploadResult> {
   const {baseUrl, adminApiKey} = getSub2APIConfig();
-  const response = await fetch(buildImportUrl(baseUrl), {
+  const response = await undiciFetch(buildImportUrl(baseUrl), {
     method: "POST",
     headers: {
       Accept: "application/json",

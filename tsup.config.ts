@@ -6,7 +6,7 @@ export default defineConfig({
   },
   outDir: "bundle",
   format: ["cjs"],
-  target: "node20",
+  target: "node16",
   platform: "node",
   splitting: false,
   sourcemap: false,
@@ -20,7 +20,6 @@ export default defineConfig({
   ],
   external: [
     "playwright-core",
-    "chromium-bidi",
   ],
   outExtension() {
     return {

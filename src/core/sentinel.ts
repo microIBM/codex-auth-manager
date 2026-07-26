@@ -58,11 +58,27 @@ export interface SentinelEnv {
 export interface FetchSentinelTokenOptions {
     flow: string;
     deviceID: string;
-    fetch: typeof fetch;
+    fetch: SentinelFetch;
     reqEndpoint: string;
     userAgent?: string;
     deviceProfile?: DeviceProfile;
 }
+
+export interface SentinelFetchResponse {
+    ok: boolean;
+    status: number;
+    text(): Promise<string>;
+    json(): Promise<unknown>;
+}
+
+export type SentinelFetch = (
+    input: string | URL,
+    init?: {
+        method?: string;
+        headers?: Record<string, string>;
+        body?: string;
+    },
+) => Promise<SentinelFetchResponse>;
 
 const DEFAULT_SENTINEL_DOCUMENT_KEYS = ["location"];
 const DEFAULT_SENTINEL_WINDOW_KEYS = [

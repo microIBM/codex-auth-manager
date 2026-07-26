@@ -1,3 +1,4 @@
+import {fetch as undiciFetch} from "undici";
 import {appConfig} from "./config.js";
 import type {SavedAuthRecord} from "./openai.js";
 
@@ -42,7 +43,7 @@ export function shouldAutoUploadAuthToCLIProxyAPI(): boolean {
 
 export async function listAuthFilesFromCLIProxyAPI(): Promise<CLIProxyAuthFileItem[]> {
   const {baseUrl} = getCLIProxyAPIConfig();
-  const response = await fetch(`${baseUrl}/v0/management/auth-files`, {
+  const response = await undiciFetch(`${baseUrl}/v0/management/auth-files`, {
     method: "GET",
     headers: createManagementHeaders(),
   });
@@ -67,7 +68,7 @@ export async function downloadAuthFileJsonObjectFromCLIProxyAPI(name: string): P
   const {baseUrl} = getCLIProxyAPIConfig();
   const url = new URL(`${baseUrl}/v0/management/auth-files/download`);
   url.searchParams.set("name", name);
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     method: "GET",
     headers: createManagementHeaders(),
   });
@@ -95,7 +96,7 @@ export async function saveAuthFileJsonObjectToCLIProxyAPI(
   const url = new URL(`${baseUrl}/v0/management/auth-files`);
   url.searchParams.set("name", fileName);
 
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     method: "POST",
     headers: createManagementHeaders({
       "Content-Type": "application/json",
@@ -111,7 +112,7 @@ export async function saveAuthFileJsonObjectToCLIProxyAPI(
 
 export async function deleteAuthFileFromCLIProxyAPI(fileName: string): Promise<void> {
   const {baseUrl} = getCLIProxyAPIConfig();
-  const response = await fetch(`${baseUrl}/v0/management/auth-files`, {
+  const response = await undiciFetch(`${baseUrl}/v0/management/auth-files`, {
     method: "DELETE",
     headers: createManagementHeaders({
       "Content-Type": "application/json",
@@ -132,7 +133,7 @@ export async function setAuthFileDisabledStatusToCLIProxyAPI(
   disabled: boolean,
 ): Promise<void> {
   const {baseUrl} = getCLIProxyAPIConfig();
-  const response = await fetch(`${baseUrl}/v0/management/auth-files/status`, {
+  const response = await undiciFetch(`${baseUrl}/v0/management/auth-files/status`, {
     method: "PATCH",
     headers: createManagementHeaders({
       "Content-Type": "application/json",

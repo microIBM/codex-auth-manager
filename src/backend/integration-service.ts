@@ -1,3 +1,4 @@
+import {fetch as undiciFetch} from "undici";
 import {appConfig} from "../core/config.js";
 import type {SavedAuthRecord} from "../core/openai.js";
 import {getDb, currentTimestamp, type IntegrationServiceKind, type IntegrationServiceRow} from "./db.js";
@@ -353,7 +354,7 @@ export async function saveAuthFileJsonObjectToCPAService(
   }
   const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/v0/management/auth-files`);
   url.searchParams.set("name", fileName);
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     method: "POST",
     headers: createManagementHeaders(config, {
       "Content-Type": "application/json",
@@ -370,7 +371,7 @@ export async function deleteAuthFileFromCPAService(
   config: CLIProxyAPIConfig,
   fileName: string,
 ): Promise<void> {
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/v0/management/auth-files`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/v0/management/auth-files`, {
     method: "DELETE",
     headers: createManagementHeaders(config, {
       "Content-Type": "application/json",
@@ -384,7 +385,7 @@ export async function deleteAuthFileFromCPAService(
 }
 
 async function testCPAConnection(config: CLIProxyAPIConfig): Promise<{success: boolean; message: string}> {
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/v0/management/auth-files`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/v0/management/auth-files`, {
     method: "GET",
     headers: createManagementHeaders(config),
   });
@@ -489,7 +490,7 @@ export async function uploadAuthFileToSub2APIService(
   fileName: string,
   record: SavedAuthRecord,
 ): Promise<Sub2APIUploadResult> {
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/import/codex-session`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/import/codex-session`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -524,7 +525,7 @@ export async function recoverSub2APIAccountStateService(
   if (!id) {
     throw new Error("Sub2API 恢复账号状态缺少 remoteId");
   }
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(id)}/recover-state`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(id)}/recover-state`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -546,7 +547,7 @@ export async function setSub2APIAccountSchedulableService(
   if (!id) {
     throw new Error("Sub2API 启用调度缺少 remoteId");
   }
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(id)}/schedulable`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(id)}/schedulable`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -568,7 +569,7 @@ export async function deleteAccountFromSub2APIService(
   if (!remoteId) {
     throw new Error("Sub2API 删除缺少 remoteId");
   }
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(remoteId)}`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/${encodeURIComponent(remoteId)}`, {
     method: "DELETE",
     headers: {
       Accept: "application/json",
@@ -587,7 +588,7 @@ export async function findSub2APIAccountByEmail(
 ): Promise<string | null> {
   const normalizedTarget = email.toLowerCase().trim();
   if (!normalizedTarget) return null;
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/data`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/data`, {
     method: "GET",
     headers: {Accept: "application/json", "x-api-key": config.adminApiKey},
   });
@@ -608,7 +609,7 @@ export async function findSub2APIAccountByEmail(
 }
 
 async function testSub2APIConnection(config: Sub2APIConfig): Promise<{success: boolean; message: string}> {
-  const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/import/codex-session`, {
+  const response = await undiciFetch(`${normalizeBaseUrl(config.baseUrl)}/api/v1/admin/accounts/import/codex-session`, {
     method: "POST",
     headers: {
       Accept: "application/json",
