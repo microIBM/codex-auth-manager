@@ -2,6 +2,7 @@ import {appConfig} from "../config.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {Agent, type Dispatcher, fetch as undiciFetch, ProxyAgent, type RequestInit as UndiciRequestInit} from "undici";
 import {findLatestVerificationMail} from "./verification-matcher.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 
 
 interface CloudflareMailItem {
@@ -86,7 +87,10 @@ async function cloudflareFetch(input: string | URL, init: UndiciRequestInit = {}
   } satisfies UndiciRequestInit);
 }
 
-async function fetchLatestMailbox(email: string): Promise<CloudflareLatestMailPayload | null> {
+async function fetchLatestMailbox(
+  email: string,
+  options: {abortSignal?: AbortSignal} = {},
+): Promise<CloudflareLatestMailPayload | null> {
   const mailbox = buildMailbox(email);
   const baseUrl = ensureApiBaseUrlConfigured();
   const apiKey = ensureApiKeyConfigured();
@@ -95,6 +99,7 @@ async function fetchLatestMailbox(email: string): Promise<CloudflareLatestMailPa
 
   const response = await cloudflareFetch(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: {
       Accept: "application/json",
       "x-api-key": apiKey,
@@ -112,7 +117,10 @@ async function fetchLatestMailbox(email: string): Promise<CloudflareLatestMailPa
   return await response.json() as CloudflareLatestMailPayload;
 }
 
-async function fetchMailboxList(email: string): Promise<CloudflareMailboxListPayload> {
+async function fetchMailboxList(
+  email: string,
+  options: {abortSignal?: AbortSignal} = {},
+): Promise<CloudflareMailboxListPayload> {
   const mailbox = buildMailbox(email);
   const baseUrl = ensureApiBaseUrlConfigured();
   const apiKey = ensureApiKeyConfigured();
@@ -122,6 +130,7 @@ async function fetchMailboxList(email: string): Promise<CloudflareMailboxListPay
 
   const response = await cloudflareFetch(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: {
       Accept: "application/json",
       "x-api-key": apiKey,
@@ -146,14 +155,16 @@ export function createCloudflareProvider() {
       const domain = ensureDomainConfigured();
       return `${generateEmailName()}@${domain}`;
     },
-    async getEmailVerificationCode(email: string) {
+    async getEmailVerificationCode(email: string, options: {abortSignal?: AbortSignal} = {}) {
       ensureDomainConfigured();
       ensureApiBaseUrlConfigured();
       ensureApiKeyConfigured();
 
       for (let attempt = 1; attempt <= CLOUDFLARE_POLL_ATTEMPTS; attempt += 1) {
-        const latestMail = await fetchLatestMailbox(email);
-        const mailboxList = await fetchMailboxList(email);
+        throwIfAborted(options.abortSignal);
+        const latestMail = await fetchLatestMailbox(email, options);
+        const mailboxList = await fetchMailboxList(email, options);
+        throwIfAborted(options.abortSignal);
         const candidates = [
           ...(latestMail ? [latestMail] : []),
           ...(mailboxList.emails ?? []),
@@ -175,7 +186,7 @@ export function createCloudflareProvider() {
         }
 
         if (attempt < CLOUDFLARE_POLL_ATTEMPTS) {
-          await new Promise((resolve) => setTimeout(resolve, CLOUDFLARE_POLL_INTERVAL_MS));
+          await abortableDelay(CLOUDFLARE_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 

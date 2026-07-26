@@ -4,6 +4,7 @@ import path from "node:path";
 import {Agent, fetch as undiciFetch} from "undici";
 import {appConfig} from "../config.js";
 import {appendErrorEmail} from "../email-error-recorder.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {nextHotmailEmailEntry} from "./hotmail-email-queue.js";
 import {createHotmailXiongmaodianProvider} from "./hotmail-xiongmaodian.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
@@ -444,10 +445,11 @@ function normalizeMessage(message, folderId) {
   };
 }
 
-async function listFolderMessages(account, folderId) {
+async function listFolderMessages(account, folderId, options = {}) {
   let payload = null;
   let apiMode = "graph";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    throwIfAborted(options.abortSignal);
     await ensureFreshAccount(account);
     apiMode = resolveApiMode(account);
     const isRest = apiMode === "rest";
@@ -464,8 +466,10 @@ async function listFolderMessages(account, folderId) {
 
     const response = await hotmailFetch(url, {
       method: "GET",
+      signal: options.abortSignal,
       headers: buildAuthHeaders(account),
     });
+    throwIfAborted(options.abortSignal);
 
     if (response.status === 401 && attempt === 1) {
       await refreshAccessToken(account);
@@ -490,11 +494,12 @@ async function listFolderMessages(account, folderId) {
     : [];
 }
 
-async function getLatestVerificationMessage(targetEmail, account) {
+async function getLatestVerificationMessage(targetEmail, account, options = {}) {
   const messages = [];
 
   for (const folderId of HOTMAIL_FOLDER_IDS) {
-    const folderMessages = await listFolderMessages(account, folderId);
+    throwIfAborted(options.abortSignal);
+    const folderMessages = await listFolderMessages(account, folderId, options);
     messages.push(...folderMessages);
   }
 
@@ -591,15 +596,17 @@ function createHotmailGraphProvider(resolveAccount = resolveAccountForEmail) {
       const {email} = await nextHotmailEmailFromQueue("hotmailEmailQueue");
       return email;
     },
-    async getEmailVerificationCode(email) {
+    async getEmailVerificationCode(email, options = {}) {
       const account = await resolveAccount(email);
 
       for (let attempt = 1; attempt <= HOTMAIL_POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `pollHotmailOtp: attempt=${attempt}/${HOTMAIL_POLL_ATTEMPTS} targetEmail=${email} mailbox=${account.loginHint}`,
         );
 
-        const message = await getLatestVerificationMessage(email, account);
+        const message = await getLatestVerificationMessage(email, account, options);
+        throwIfAborted(options.abortSignal);
         if (message?.verificationCode) {
           console.log(`hotmailOtpCode: ${message.verificationCode}`);
           console.log(`hotmailOtpFolder: ${message.folderId}`);
@@ -607,7 +614,7 @@ function createHotmailGraphProvider(resolveAccount = resolveAccountForEmail) {
         }
 
         if (attempt < HOTMAIL_POLL_ATTEMPTS) {
-          await new Promise((resolve) => setTimeout(resolve, HOTMAIL_POLL_INTERVAL_MS));
+          await abortableDelay(HOTMAIL_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 

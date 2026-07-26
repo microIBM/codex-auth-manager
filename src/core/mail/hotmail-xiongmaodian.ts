@@ -1,5 +1,6 @@
 import {fetch as undiciFetch} from "undici";
 import type {EmailCodeProvider, EmailVerificationCodeOptions} from "../mailbox.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {
   getHotmailEmailsFile,
   getHotmailRemainingEmailCount,
@@ -46,9 +47,10 @@ function parseTimestamp(date: string | undefined): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
 }
 
-async function fetchInbox(email: string): Promise<XmdEmail[]> {
+async function fetchInbox(email: string, options: {abortSignal?: AbortSignal} = {}): Promise<XmdEmail[]> {
   const url = `${API_BASE}/${encodeURIComponent(email)}/1`;
-  const response = await undiciFetch(url);
+  const response = await undiciFetch(url, {signal: options.abortSignal});
+  throwIfAborted(options.abortSignal);
   if (!response.ok) {
     throw new Error(`xiongmaodian fetch HTTP ${response.status}`);
   }
@@ -59,10 +61,6 @@ async function fetchInbox(email: string): Promise<XmdEmail[]> {
     );
   }
   return payload.emails;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeCode(value: string): string {
@@ -124,14 +122,17 @@ export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
         .filter(Boolean);
       const lastAcceptedCode = lastAcceptedCodeByEmail.get(targetEmail) ?? "";
       for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `pollHotmailOtp(xiongmaodian): attempt=${attempt}/${POLL_ATTEMPTS} targetEmail=${targetEmail}`,
         );
 
         let emails: XmdEmail[] = [];
         try {
-          emails = await fetchInbox(targetEmail);
+          emails = await fetchInbox(targetEmail, {abortSignal: options.abortSignal});
+          throwIfAborted(options.abortSignal);
         } catch (error) {
+          throwIfAborted(options.abortSignal);
           console.warn(
             `pollHotmailOtp(xiongmaodian) 拉取失败: ${(error as Error).message}`,
           );
@@ -181,7 +182,7 @@ export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
         }
 
         if (attempt < POLL_ATTEMPTS) {
-          await sleep(POLL_INTERVAL_MS);
+          await abortableDelay(POLL_INTERVAL_MS, options.abortSignal);
         }
       }
       throw new Error(`Hotmail(xiongmaodian) 等待验证码超时: ${email}`);

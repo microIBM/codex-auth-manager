@@ -68,6 +68,7 @@ export interface RegisterOptions {
     cliHotmailMode?: HotmailMode;
     uploadTarget?: UploadTarget;
     shouldCancel?: () => boolean;
+    abortSignal?: AbortSignal;
 }
 
 export interface RegisterResult {
@@ -151,7 +152,11 @@ function summarizeSmsBrokerUsage(broker: unknown): {smsNumbersUsed: number; smsS
 }
 
 function shouldCancelRegistration(options: RegisterOptions): boolean {
-  return Boolean(options.shouldCancel?.() || (options.jobId && isJobCancellationRequested(options.jobId)));
+  return Boolean(
+    options.abortSignal?.aborted ||
+    options.shouldCancel?.() ||
+    (options.jobId && isJobCancellationRequested(options.jobId)),
+  );
 }
 
 function rethrowIfCancellation(error: unknown, options: RegisterOptions): void {
@@ -168,16 +173,41 @@ function logEmailOtpCode(targetEmail: string, code: string): void {
   console.log(`[邮箱验证码] ${targetEmail} code=${code}`);
 }
 
-function createCancellationSignal(jobId?: number) {
+function createCancellationSignal(jobId?: number, parentSignal?: AbortSignal) {
+  const controller = new AbortController();
   let cancelled = false;
-  const off = jobId
-    ? onJobCancelled(jobId, () => {
-      cancelled = true;
-    })
+  const cancel = () => {
+    cancelled = true;
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+  const offJobCancel = jobId ? onJobCancelled(jobId, cancel) : undefined;
+  const offParentCancel = parentSignal
+    ? () => parentSignal.removeEventListener("abort", cancel)
     : undefined;
+
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      cancel();
+    } else {
+      parentSignal.addEventListener("abort", cancel, {once: true});
+    }
+  }
+  if (jobId && isJobCancellationRequested(jobId)) {
+    cancel();
+  }
+
   return {
-    isCancelled: () => cancelled || Boolean(jobId && isJobCancellationRequested(jobId)),
-    dispose: () => off?.(),
+    signal: controller.signal,
+    isCancelled: () => cancelled ||
+      controller.signal.aborted ||
+      Boolean(parentSignal?.aborted) ||
+      Boolean(jobId && isJobCancellationRequested(jobId)),
+    dispose: () => {
+      offJobCancel?.();
+      offParentCancel?.();
+    },
   };
 }
 
@@ -340,9 +370,10 @@ function resolveRegistrationPassword(input?: string): string {
 
 async function runSingleRegistration(options: RegisterOptions, email?: string, sharedBroker?: ISMSActivationBroker): Promise<SingleRegistrationResult> {
   throwIfJobCancelled(options.jobId);
-  const cancellation = createCancellationSignal(options.jobId);
+  const cancellation = createCancellationSignal(options.jobId, options.abortSignal);
   const scopedOptions: RegisterOptions = {
     ...options,
+    abortSignal: cancellation.signal,
     shouldCancel: () => Boolean(options.shouldCancel?.() || cancellation.isCancelled()),
   };
   try {
@@ -379,7 +410,10 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     }
     : databaseProvider
       ? async (targetEmail: string, excludeCodes: string[]) => {
-        const code = await databaseProvider.getEmailVerificationCode(targetEmail, {excludeCodes});
+        const code = await databaseProvider.getEmailVerificationCode(targetEmail, {
+          excludeCodes,
+          abortSignal: options.abortSignal,
+        });
         logEmailOtpCode(targetEmail, code);
         if (options.jobId) {
           addJobEvent(options.jobId, "info", `邮箱验证码: ${targetEmail} code=${code}`);
@@ -416,6 +450,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       smsBroker,
       smsVerificationDisabled: !smsVerificationEnabled,
       shouldCancel,
+      abortSignal: options.abortSignal,
     });
     const result = await client.authLoginHTTP();
     console.log(`[授权成功] 邮箱：${client.email} 密码：${password} 授权文件：${result.authFile ?? ""}`);
@@ -436,6 +471,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       smsBroker,
       smsVerificationDisabled: !smsVerificationEnabled,
       shouldCancel,
+      abortSignal: options.abortSignal,
     });
     try {
       const result = await client.authRegisterAndAuthorizeHTTP();
@@ -473,6 +509,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     smsBroker,
     smsVerificationDisabled: !smsVerificationEnabled,
     shouldCancel,
+    abortSignal: options.abortSignal,
   });
   try {
     throwIfJobCancelled(options.jobId);
@@ -514,6 +551,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     smsBroker,
     smsVerificationDisabled: !smsVerificationEnabled,
     shouldCancel,
+    abortSignal: options.abortSignal,
   });
   try {
     throwIfJobCancelled(options.jobId);

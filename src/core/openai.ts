@@ -143,6 +143,7 @@ export interface OpenAIClientOptions {
   smsBroker?: ISMSActivationBroker;
   smsVerificationDisabled?: boolean;
   shouldCancel?: () => boolean;
+  abortSignal?: AbortSignal;
 }
 
 export class IdentityProviderMismatchError extends Error {
@@ -171,9 +172,10 @@ export class OpenAIClient {
   readonly smsBroker?: ISMSActivationBroker;
   readonly smsVerificationDisabled: boolean;
   readonly shouldCancel?: () => boolean;
-  private readonly abortController?: AbortController;
+  private readonly abortController: AbortController;
   private readonly browserTransportEnabled: boolean;
   private browserTransportFallbackWarned = false;
+  private browser?: Browser;
   private browserContext?: BrowserContext;
   private browserPage?: Page;
 
@@ -181,7 +183,15 @@ export class OpenAIClient {
     this.smsBroker = options.smsBroker;
     this.smsVerificationDisabled = Boolean(options.smsVerificationDisabled);
     this.shouldCancel = options.shouldCancel;
-    this.abortController = options.shouldCancel ? new AbortController() : undefined;
+    this.abortController = new AbortController();
+    if (options.abortSignal) {
+      const abort = () => this.abortRegistration();
+      if (options.abortSignal.aborted) {
+        abort();
+      } else {
+        options.abortSignal.addEventListener("abort", abort, {once: true});
+      }
+    }
     this.email = normalizeEmailAddress(options.email);
     this.password = options.password;
     this.deviceProfile = options.deviceProfile
@@ -216,11 +226,77 @@ export class OpenAIClient {
     this.throwIfCancelled();
   }
 
+  private createCancellationError(): Error {
+    return new Error("Job cancelled");
+  }
+
+  private isCancellationRequested(): boolean {
+    return this.abortController.signal.aborted || Boolean(this.shouldCancel?.());
+  }
+
+  private abortRegistration(): void {
+    if (!this.abortController.signal.aborted) {
+      this.abortController.abort();
+    }
+    void this.closeBrowserTransport();
+  }
+
   private throwIfCancelled(): void {
     if (this.shouldCancel?.()) {
-      this.abortController?.abort();
-      throw new Error("任务已结束");
+      this.abortRegistration();
     }
+    if (this.abortController.signal.aborted) {
+      throw this.createCancellationError();
+    }
+  }
+
+  private async wait(ms: number): Promise<void> {
+    await sleep(ms, () => this.isCancellationRequested());
+    this.throwIfCancelled();
+  }
+
+  private raceCancellation<T>(operation: Promise<T>): Promise<T> {
+    const signal = this.abortController.signal;
+    if (signal.aborted) {
+      operation.catch(() => undefined);
+      throw this.createCancellationError();
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(this.createCancellationError());
+      };
+
+      signal.addEventListener("abort", onAbort, {once: true});
+      if (signal.aborted) {
+        onAbort();
+      }
+      operation.then(
+        (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          resolve(value);
+        },
+        (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          reject(error);
+        },
+      );
+    });
   }
 
   async authLoginHTTP(): Promise<AuthLoginResult> {
@@ -815,7 +891,10 @@ export class OpenAIClient {
       return this.promptEmailOtp();
     }
     console.log(`autoEmailOtp: provider=${MAILBOX_CONFIG.provider} targetEmail=${this.email}`);
-    const code = await getEmailVerificationCode(this.email, { excludeCodes });
+    const code = await getEmailVerificationCode(this.email, {
+      excludeCodes,
+      abortSignal: this.abortController.signal,
+    });
     console.log(`[邮箱验证码] ${this.email} code=${code}`);
     return code;
   }
@@ -839,13 +918,14 @@ export class OpenAIClient {
       this.throwIfCancelled();
       if (phoneIdx > 1) {
         console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 等待 ${SMS_NUMBER_ACQUIRE_INTERVAL_MS}ms 后再次获取号码`);
-        await sleep(SMS_NUMBER_ACQUIRE_INTERVAL_MS, this.shouldCancel);
+        await this.wait(SMS_NUMBER_ACQUIRE_INTERVAL_MS);
       }
       console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从短信平台获取号码`);
       let lease: ActivationLease;
       try {
         lease = await this.smsBroker.getActivation();
       } catch (error) {
+        this.throwIfCancelled();
         const err = error instanceof Error ? error : new Error(String(error));
         lastError = err;
         console.warn(`[SMS ${phoneIdx}/${MAX_PHONES}] 短信平台获取号码失败: ${err.message}`);
@@ -857,6 +937,7 @@ export class OpenAIClient {
         await this.sendPhoneOtp(phoneNumber);
         console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信成功 phone=${phoneNumber}`);
       } catch (error) {
+        this.throwIfCancelled();
         console.warn(
           `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信失败 phone=${phoneNumber}: ${(error as Error).message}`,
         );
@@ -879,11 +960,13 @@ export class OpenAIClient {
           const verification = await currentLease.waitForVerificationCode({
             pollAttempts: POLLS_PER_PHONE,
             autoMark: false,
+            abortSignal: this.abortController.signal,
           });
           code = verification.code;
           console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 收到短信验证码 code=${code}`);
           break;
         } catch (error) {
+          this.throwIfCancelled();
           const err = error as Error;
           console.warn(
             `[SMS ${phoneIdx}/${MAX_PHONES}] 第 ${sendIdx} 次发送的 ${POLLS_PER_PHONE} 次轮询未拿到验证码: ${err.message}`,
@@ -902,6 +985,7 @@ export class OpenAIClient {
                 `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信成功 phone=${phoneNumber}`,
               );
             } catch (sendError) {
+              this.throwIfCancelled();
               lastError = sendError as Error;
               console.warn(
                 `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信失败 phone=${phoneNumber}: ${(sendError as Error).message}`,
@@ -935,12 +1019,13 @@ export class OpenAIClient {
           await this.smsBroker.markAsSucceed();
           return nextURL;
         } catch (error) {
+          this.throwIfCancelled();
           console.warn(
             `[SMS ${phoneIdx}/${MAX_PHONES}] 提交 code 被拒 (${submitIter}/${MAX_SUBMIT_RETRY}): ${(error as Error).message}`,
           );
           lastError = error as Error;
           if (submitIter < MAX_SUBMIT_RETRY) {
-            await sleep(2000, this.shouldCancel);
+            await this.wait(2000);
           } else {
             rotateAfterSubmit = true;
           }
@@ -1464,7 +1549,7 @@ export class OpenAIClient {
       if (response.status === 429 && attempt < MAX_RETRIES) {
         const delay = Math.min(5000 * (attempt + 1), 15000);
         console.warn(`[注册] 打开直接注册授权页遇到 429，${delay / 1000}s 后重试 (${attempt + 1}/${MAX_RETRIES})`);
-        await sleep(delay, this.shouldCancel);
+        await this.wait(delay);
         continue;
       }
       if (!response.ok) {
@@ -1513,21 +1598,25 @@ export class OpenAIClient {
     for (let attempt = 1; attempt <= FETCH_RETRY_COUNT; attempt++) {
       this.throwIfCancelled();
       try {
-        const initWithAbort = this.abortController
-          ? {
-            ...(init ?? {}),
-            signal: this.abortController.signal,
-          }
-          : init;
+        const initWithAbort = {
+          ...(init ?? {}),
+          signal: this.abortController.signal,
+        };
         if (this.browserTransportEnabled) {
           try {
             return await this.fetchWithBrowserTransport(input, initWithAbort);
           } catch (error) {
+            if (this.isCancellationRequested()) {
+              throw this.createCancellationError();
+            }
             this.warnBrowserTransportFallback(error);
           }
         }
         return await baseFetch(input, initWithAbort);
       } catch (error) {
+        if (this.isCancellationRequested()) {
+          throw this.createCancellationError();
+        }
         lastError = error;
         if (!isRetryableFetchError(error) || attempt >= FETCH_RETRY_COUNT) {
           throw error;
@@ -1536,7 +1625,7 @@ export class OpenAIClient {
           `[网络重试 ${attempt}/${FETCH_RETRY_COUNT}] ${this.describeRetryTarget(input)} ${this.describeRetryError(error)}`,
         );
         console.log(`[延迟] 网络重试等待 ${FETCH_RETRY_DELAY_MS * attempt}ms`);
-        await sleep(FETCH_RETRY_DELAY_MS * attempt, this.shouldCancel);
+        await this.wait(FETCH_RETRY_DELAY_MS * attempt);
       }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -1567,7 +1656,8 @@ export class OpenAIClient {
     } as const;
 
     const body = this.serializeRequestBody(init?.body);
-    const result = await page.evaluate(async ({ targetUrl, requestOptions, requestBody }) => {
+    this.throwIfCancelled();
+    const result = await this.raceCancellation(page.evaluate(async ({ targetUrl, requestOptions, requestBody }) => {
       const fetchInit: RequestInit = {
         method: requestOptions.method ?? "GET",
         headers: requestOptions.headers ?? {},
@@ -1590,7 +1680,7 @@ export class OpenAIClient {
       targetUrl: requestUrl,
       requestOptions: requestInit,
       requestBody: body,
-    });
+    }));
 
     return new Response(result.bodyText, {
       status: result.status,
@@ -1600,11 +1690,13 @@ export class OpenAIClient {
   }
 
   private async ensureBrowserPage(): Promise<{ page: Page; context: BrowserContext }> {
+    this.throwIfCancelled();
     if (this.browserPage && this.browserContext) {
       return { page: this.browserPage, context: this.browserContext };
     }
 
     const browser = await this.launchBrowser();
+    this.throwIfCancelled();
     const context = await browser.newContext({
       viewport: {
         width: this.deviceProfile.viewportWidth,
@@ -1625,10 +1717,37 @@ export class OpenAIClient {
         "sec-ch-ua-mobile": this.deviceProfile.isMobile ? "?1" : "?0",
       },
     });
+    this.throwIfCancelled();
     const page = await context.newPage();
+    this.throwIfCancelled();
+    this.browser = browser;
     this.browserContext = context;
     this.browserPage = page;
     return { page, context };
+  }
+
+  private async closeBrowserTransport(): Promise<void> {
+    const page = this.browserPage;
+    const context = this.browserContext;
+    const browser = this.browser;
+    this.browserPage = undefined;
+    this.browserContext = undefined;
+    this.browser = undefined;
+    try {
+      await page?.close();
+    } catch {
+      // ignore browser shutdown errors during cancellation
+    }
+    try {
+      await context?.close();
+    } catch {
+      // ignore browser shutdown errors during cancellation
+    }
+    try {
+      await browser?.close();
+    } catch {
+      // ignore browser shutdown errors during cancellation
+    }
   }
 
   private async launchBrowser(): Promise<Browser> {

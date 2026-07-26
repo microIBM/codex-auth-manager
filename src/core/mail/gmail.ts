@@ -1,6 +1,7 @@
 // @ts-nocheck
 import {fetch as undiciFetch, Headers} from "undici";
 import {appConfig} from "../config.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
@@ -21,7 +22,7 @@ function buildAuthHeaders() {
   });
 }
 
-async function gmailRequest(path, query = {}) {
+async function gmailRequest(path, query = {}, options = {}) {
   const url = new URL(`${GMAIL_API_BASE_URL}${path}`);
   for (const [key, value] of Object.entries(query)) {
     if (value == null || value === "") {
@@ -32,6 +33,7 @@ async function gmailRequest(path, query = {}) {
 
   const response = await undiciFetch(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: buildAuthHeaders(),
   });
 
@@ -42,9 +44,10 @@ async function gmailRequest(path, query = {}) {
   return response.json();
 }
 
-async function gmailDeleteRequest(path) {
+async function gmailDeleteRequest(path, options = {}) {
   const response = await undiciFetch(`${GMAIL_API_BASE_URL}${path}`, {
     method: "DELETE",
+    signal: options.abortSignal,
     headers: buildAuthHeaders(),
   });
 
@@ -98,23 +101,24 @@ function getHeaderValue(payload, name) {
   return String(match?.value ?? "");
 }
 
-async function listMessagesByRecipient(targetEmail) {
+async function listMessagesByRecipient(targetEmail, options = {}) {
   const q = `to:${targetEmail}`;
 
   const payload = await gmailRequest(`/users/${encodeURIComponent(GMAIL_USER_ID)}/messages`, {
     q,
     maxResults: GMAIL_MAX_RESULTS,
-  });
+  }, options);
 
   return Array.isArray(payload.messages) ? payload.messages : [];
 }
 
-async function getMessage(messageId) {
+async function getMessage(messageId, options = {}) {
   const payload = await gmailRequest(
     `/users/${encodeURIComponent(GMAIL_USER_ID)}/messages/${encodeURIComponent(messageId)}`,
     {
       format: "full",
     },
+    options,
   );
 
   const bodyContent = collectBodyText(payload.payload).join("\n").trim();
@@ -136,12 +140,13 @@ async function getMessage(messageId) {
   };
 }
 
-async function getLatestVerificationMessage(targetEmail) {
-  const messages = await listMessagesByRecipient(targetEmail);
+async function getLatestVerificationMessage(targetEmail, options = {}) {
+  const messages = await listMessagesByRecipient(targetEmail, options);
   const details = [];
 
   for (const item of messages) {
-    const message = await getMessage(item.id);
+    throwIfAborted(options.abortSignal);
+    const message = await getMessage(item.id, options);
     details.push({
       ...message,
       recipient: message.toAddress,
@@ -191,9 +196,10 @@ async function getLatestMessageSummary(targetEmail) {
   };
 }
 
-async function deleteMessage(messageId) {
+async function deleteMessage(messageId, options = {}) {
   await gmailDeleteRequest(
     `/users/${encodeURIComponent(GMAIL_USER_ID)}/messages/${encodeURIComponent(messageId)}`,
+    options,
   );
 }
 
@@ -205,23 +211,23 @@ export function createGmailProvider() {
       }
       return buildGmailAlias(appConfig.gmailEmailAddress);
     },
-    async getEmailVerificationCode(email) {
+    async getEmailVerificationCode(email, options = {}) {
       for (let attempt = 1; attempt <= GMAIL_POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `pollGmailOtp: attempt=${attempt}/${GMAIL_POLL_ATTEMPTS} targetEmail=${email}`,
         );
 
-        const message = await getLatestVerificationMessage(email);
+        const message = await getLatestVerificationMessage(email, options);
+        throwIfAborted(options.abortSignal);
         if (message?.verificationCode) {
-          await deleteMessage(message.id);
+          await deleteMessage(message.id, options);
           console.log(`gmailOtpCode: ${message.verificationCode}`);
           return message.verificationCode;
         }
 
         if (attempt < GMAIL_POLL_ATTEMPTS) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, GMAIL_POLL_INTERVAL_MS),
-          );
+          await abortableDelay(GMAIL_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 

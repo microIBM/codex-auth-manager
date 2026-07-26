@@ -14,6 +14,7 @@ export interface EmailCodeProvider {
 
 export interface EmailVerificationCodeOptions {
   excludeCodes?: string[];
+  abortSignal?: AbortSignal;
 }
 
 export interface LatestEmail {

@@ -16,6 +16,7 @@ export interface SmsVerificationCode {
 export interface SmsWaitForCodeOptions {
   pollAttempts?: number;
   pollIntervalMs?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface SmsProvider<

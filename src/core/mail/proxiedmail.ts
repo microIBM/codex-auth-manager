@@ -2,6 +2,7 @@
 import {readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {fetch as undiciFetch} from "undici";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
@@ -80,9 +81,11 @@ function buildProxyAddress() {
 
 async function requestJSON(path, options = {}) {
   await loadPersistedAccountState();
+  const {abortSignal, ...requestOptions} = options;
   const response = await proxiedFetch(`${PROXIEDMAIL_BASE_URL}${path}`, {
-    ...options,
-    headers: options.headers ?? buildHeaders(),
+    ...requestOptions,
+    signal: abortSignal ?? requestOptions.signal,
+    headers: requestOptions.headers ?? buildHeaders(),
   });
 
   if (!response.ok) {
@@ -229,21 +232,22 @@ async function createProxyBinding(proxyAddress, options = {}) {
   return normalized;
 }
 
-async function listProxyBindings() {
+async function listProxyBindings(options = {}) {
   const payload = await requestJSON("/proxy-bindings", {
     method: "GET",
+    abortSignal: options.abortSignal,
   });
 
   return Array.isArray(payload?.data) ? payload.data : [];
 }
 
-async function resolveProxyBindingByAddress(email) {
+async function resolveProxyBindingByAddress(email, options = {}) {
   const cached = bindingCache.get(String(email).toLowerCase());
   if (cached) {
     return cached;
   }
 
-  const bindings = await listProxyBindings();
+  const bindings = await listProxyBindings(options);
   const match = bindings.find(
     (item) =>
       String(item?.attributes?.proxy_address ?? "").toLowerCase() ===
@@ -263,22 +267,24 @@ async function resolveProxyBindingByAddress(email) {
   return normalized;
 }
 
-async function listReceivedEmailLinks(proxyBindingId) {
+async function listReceivedEmailLinks(proxyBindingId, options = {}) {
   const payload = await requestJSON(
     `/received-emails-links/${encodeURIComponent(proxyBindingId)}`,
     {
       method: "GET",
+      abortSignal: options.abortSignal,
     },
   );
 
   return Array.isArray(payload?.data) ? payload.data : [];
 }
 
-async function getReceivedEmail(receivedEmailId) {
+async function getReceivedEmail(receivedEmailId, options = {}) {
   const payload = await requestJSON(
     `/received-emails/${encodeURIComponent(receivedEmailId)}`,
     {
       method: "GET",
+      abortSignal: options.abortSignal,
     },
   );
 
@@ -297,11 +303,12 @@ async function getReceivedEmail(receivedEmailId) {
   };
 }
 
-async function getLatestVerificationMessage(email) {
-  const binding = await resolveProxyBindingByAddress(email);
-  const links = await listReceivedEmailLinks(binding.id);
+async function getLatestVerificationMessage(email, options = {}) {
+  const binding = await resolveProxyBindingByAddress(email, options);
+  const links = await listReceivedEmailLinks(binding.id, options);
   const detailed = [];
   for (const item of links) {
+    throwIfAborted(options.abortSignal);
     const attributes = item?.attributes ?? {};
     const linkPath = String(attributes.link ?? "");
     const id = String(item?.id ?? "");
@@ -311,7 +318,7 @@ async function getLatestVerificationMessage(email) {
       continue;
     }
 
-    const detail = await getReceivedEmail(receivedEmailId);
+    const detail = await getReceivedEmail(receivedEmailId, options);
     detailed.push({
       ...detail,
       createdAtMs: parseCreatedAtMs(detail.createdAt),
@@ -383,23 +390,23 @@ export function createProxiedMailProvider() {
       const binding = await createProxyBinding(proxyAddress);
       return binding.proxyAddress;
     },
-    async getEmailVerificationCode(email) {
+    async getEmailVerificationCode(email, options = {}) {
       await loadPersistedAccountState();
       for (let attempt = 1; attempt <= PROXIEDMAIL_POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `pollProxiedMailOtp: attempt=${attempt}/${PROXIEDMAIL_POLL_ATTEMPTS} targetEmail=${email}`,
         );
 
-        const message = await getLatestVerificationMessage(email);
+        const message = await getLatestVerificationMessage(email, options);
+        throwIfAborted(options.abortSignal);
         if (message?.verificationCode) {
           console.log(`proxiedmailOtpCode: ${message.verificationCode}`);
           return message.verificationCode;
         }
 
         if (attempt < PROXIEDMAIL_POLL_ATTEMPTS) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, PROXIEDMAIL_POLL_INTERVAL_MS),
-          );
+          await abortableDelay(PROXIEDMAIL_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 

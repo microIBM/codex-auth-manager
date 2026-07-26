@@ -68,6 +68,32 @@ try {
   assert.equal(retryResult, "ACCESS_STATUS_3");
   const cancelResult = await provider.cancelActivation("555");
   assert.equal(cancelResult, "ACCESS_STATUS_8");
+
+  const abortRequests: URL[] = [];
+  const abortController = new AbortController();
+  const abortProvider = createGrizzlySmsProvider({
+    apiKey: "api-key",
+    baseUrl: "https://example.test/stubs/handler_api.php",
+    defaultWaitForCodeOptions: {
+      pollAttempts: 2,
+      pollIntervalMs: 10_000,
+    },
+    fetchImpl: async (input, init) => {
+      abortRequests.push(new URL(String(input)));
+      assert.equal(init?.signal, abortController.signal);
+      return new Response("STATUS_WAIT_CODE");
+    },
+  });
+  const startedAt = Date.now();
+  const waitPromise = abortProvider.waitForVerificationCode("555", {
+    abortSignal: abortController.signal,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  abortController.abort();
+
+  await assert.rejects(waitPromise, /Job cancelled/);
+  assert.equal(abortRequests.length, 1);
+  assert.ok(Date.now() - startedAt < 1000);
 } finally {
   console.log = originalConsoleLog;
 }

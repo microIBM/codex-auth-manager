@@ -4,10 +4,12 @@ import {
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
 } from "undici";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import type {
   SmsActivation,
   SmsProvider,
   SmsVerificationCode,
+  SmsWaitForCodeOptions,
 } from "./provider.js";
 
 const GRIZZLY_SMS_DEFAULT_BASE_URL = "https://api.grizzlysms.com/stubs/handler_api.php";
@@ -55,11 +57,9 @@ export interface GrizzlySmsVerificationCode extends SmsVerificationCode {
   rawStatus: string;
 }
 
-export interface GrizzlySmsWaitForCodeOptions {
+export interface GrizzlySmsWaitForCodeOptions extends SmsWaitForCodeOptions {
   markReady?: boolean;
   completeOnCode?: boolean;
-  pollAttempts?: number;
-  pollIntervalMs?: number;
 }
 
 export interface GrizzlySmsProvider extends SmsProvider<
@@ -73,7 +73,10 @@ export interface GrizzlySmsProvider extends SmsProvider<
   completeActivation(activationId: string | number): Promise<string>;
   cancelAndWithdraw(activationId: string | number): Promise<string>;
   cancelActivation(activationId: string | number): Promise<string>;
-  getActivationStatus(activationId: string | number): Promise<string>;
+  getActivationStatus(
+    activationId: string | number,
+    options?: {abortSignal?: AbortSignal},
+  ): Promise<string>;
   waitForVerificationCode(
     activationId: string | number,
     options?: GrizzlySmsWaitForCodeOptions,
@@ -196,7 +199,9 @@ async function requestGrizzlySmsApi(
   config: GrizzlySmsProviderConfig,
   action: string,
   query: Record<string, unknown> = {},
+  options: {abortSignal?: AbortSignal} = {},
 ): Promise<string> {
+  throwIfAborted(options.abortSignal);
   const url = new URL(normalizeBaseUrl(config));
   url.searchParams.set("api_key", ensureApiKeyConfigured(config));
   url.searchParams.set("action", action);
@@ -206,10 +211,12 @@ async function requestGrizzlySmsApi(
 
   const response = await (config.fetchImpl ?? createDefaultFetch())(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: {
       Accept: "text/plain, application/json;q=0.9, */*;q=0.8",
     },
   });
+  throwIfAborted(options.abortSignal);
   const payload = (await response.text()).trim();
   if (!response.ok) {
     throw createApiError(config, action, payload, response.status);
@@ -288,10 +295,6 @@ function resolvePollIntervalMs(config: GrizzlySmsProviderConfig, options?: Grizz
   return intervalMs > 0 ? Math.floor(intervalMs) : GRIZZLY_SMS_DEFAULT_POLL_INTERVAL_MS;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): GrizzlySmsProvider {
   ensureApiKeyConfigured(config);
 
@@ -343,10 +346,13 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
       });
     },
 
-    async getActivationStatus(activationId: string | number): Promise<string> {
+    async getActivationStatus(
+      activationId: string | number,
+      requestOptions: {abortSignal?: AbortSignal} = {},
+    ): Promise<string> {
       return requestGrizzlySmsApi(config, "getStatus", {
         id: normalizeActivationId(activationId),
-      });
+      }, requestOptions);
     },
 
     async waitForVerificationCode(
@@ -362,13 +368,19 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
       const pollIntervalMs = resolvePollIntervalMs(config, waitOptions);
       let lastStatus = "";
 
+      throwIfAborted(waitOptions.abortSignal);
       if (waitOptions.markReady) {
         await provider.markActivationReady(normalizedActivationId);
+        throwIfAborted(waitOptions.abortSignal);
       }
 
       for (let attempt = 1; attempt <= pollAttempts; attempt += 1) {
+        throwIfAborted(waitOptions.abortSignal);
         console.log(`[pollSMSCode]: ${getProviderName(config)} attempt:${attempt}/${pollAttempts}`);
-        const status = await provider.getActivationStatus(normalizedActivationId);
+        const status = await provider.getActivationStatus(normalizedActivationId, {
+          abortSignal: waitOptions.abortSignal,
+        });
+        throwIfAborted(waitOptions.abortSignal);
         lastStatus = status;
         const verification = extractCodeFromStatus(status);
         if (verification) {
@@ -383,7 +395,7 @@ export function createGrizzlySmsProvider(config: GrizzlySmsProviderConfig): Griz
         }
 
         if (attempt < pollAttempts) {
-          await delay(pollIntervalMs);
+          await abortableDelay(pollIntervalMs, waitOptions.abortSignal);
         }
       }
 

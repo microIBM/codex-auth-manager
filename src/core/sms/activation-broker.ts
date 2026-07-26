@@ -458,6 +458,9 @@ export class ActivationBroker<
         if (options?.pollIntervalMs !== undefined) {
           providerOptions.pollIntervalMs = options.pollIntervalMs;
         }
+        if (options?.abortSignal !== undefined) {
+          providerOptions.abortSignal = options.abortSignal;
+        }
         try {
           const verification = await this.provider.waitForVerificationCode(
             activation.activationId,
@@ -474,7 +477,7 @@ export class ActivationBroker<
             rawStatus: verification.rawStatus,
           };
         } catch (e) {
-          if (autoMark) {
+          if (autoMark && !options?.abortSignal?.aborted) {
             await this.markAsFailed(rotateOnFailure);
           }
           throw e;

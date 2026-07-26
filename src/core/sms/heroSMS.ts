@@ -5,10 +5,12 @@ import {
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
 } from "undici";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import type {
   SmsActivation,
   SmsProvider,
   SmsVerificationCode,
+  SmsWaitForCodeOptions,
 } from "./provider.js";
 
 const HERO_SMS_DEFAULT_BASE_URL = "https://hero-sms.com/stubs/handler_api.php";
@@ -106,11 +108,9 @@ export interface HeroSmsVerificationCode extends SmsVerificationCode {
   rawStatus: unknown;
 }
 
-export interface HeroSmsWaitForCodeOptions {
+export interface HeroSmsWaitForCodeOptions extends SmsWaitForCodeOptions {
   markReady?: boolean;
   completeOnCode?: boolean;
-  pollAttempts?: number;
-  pollIntervalMs?: number;
 }
 
 export interface HeroSmsAcquireAndWaitOptions extends HeroSmsWaitForCodeOptions {
@@ -129,9 +129,13 @@ export interface HeroSmsProvider extends SmsProvider<
   completeActivation(activationId: string | number): Promise<string>;
   cancelAndWithdraw(activationId: string | number): Promise<string>;
   cancelActivation(activationId: string | number): Promise<string>;
-  getActivationStatus(activationId: string | number): Promise<string>;
+  getActivationStatus(
+    activationId: string | number,
+    options?: {abortSignal?: AbortSignal},
+  ): Promise<string>;
   getActivationStatusV2(
     activationId: string | number,
+    options?: {abortSignal?: AbortSignal},
   ): Promise<string | HeroSmsStatusPayload>;
   waitForVerificationCode(
     activationId: string | number,
@@ -363,7 +367,9 @@ async function requestHeroSmsApi(
   config: HeroSmsProviderConfig,
   action: string,
   query: Record<string, unknown> = {},
+  options: {abortSignal?: AbortSignal} = {},
 ): Promise<unknown> {
+  throwIfAborted(options.abortSignal);
   const url = new URL(normalizeBaseUrl(config));
   url.searchParams.set("api_key", ensureApiKeyConfigured(config));
   url.searchParams.set("action", action);
@@ -374,10 +380,12 @@ async function requestHeroSmsApi(
 
   const response = await heroSmsFetch(config, url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: {
       Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
     },
   });
+  throwIfAborted(options.abortSignal);
 
   const payload = await readResponseBody(response);
 
@@ -684,11 +692,12 @@ function buildVerificationFromActiveActivation(
 async function fetchActiveActivation(
   config: HeroSmsProviderConfig,
   activationId: string,
+  abortSignal?: AbortSignal,
 ): Promise<HeroSmsActiveActivation | null> {
   const payload = await requestHeroSmsApi(config, "getActiveActivations", {
     start: 0,
     limit: 100,
-  });
+  }, {abortSignal});
 
   if (!isRecord(payload)) {
     throw new Error(
@@ -733,12 +742,6 @@ function resolvePollIntervalMs(
   return intervalMs > 0
     ? Math.floor(intervalMs)
     : HERO_SMS_DEFAULT_POLL_INTERVAL_MS;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
 
 export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
@@ -834,20 +837,24 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
       return provider.cancelAndWithdraw(activationId);
     },
 
-    async getActivationStatus(activationId: string | number): Promise<string> {
+    async getActivationStatus(
+      activationId: string | number,
+      requestOptions: {abortSignal?: AbortSignal} = {},
+    ): Promise<string> {
       const payload = await requestHeroSmsApi(config, "getStatus", {
         id: normalizeActivationId(activationId),
-      });
+      }, requestOptions);
 
       return String(payload).trim();
     },
 
     async getActivationStatusV2(
       activationId: string | number,
+      requestOptions: {abortSignal?: AbortSignal} = {},
     ): Promise<string | HeroSmsStatusPayload> {
       const payload = await requestHeroSmsApi(config, "getStatusV2", {
         id: normalizeActivationId(activationId),
-      });
+      }, requestOptions);
 
       return normalizeStatusPayload(payload);
     },
@@ -869,17 +876,22 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
       const pollIntervalMs = resolvePollIntervalMs(config, waitOptions);
       let lastStatus: unknown;
 
+      throwIfAborted(waitOptions.abortSignal);
       if (shouldMarkReady) {
         await provider.markActivationReady(normalizedActivationId);
+        throwIfAborted(waitOptions.abortSignal);
       }
 
       for (let attempt = 1; attempt <= pollAttempts; attempt += 1) {
+        throwIfAborted(waitOptions.abortSignal);
         console.log(`[pollSMSCode]: attempt:${attempt}/${pollAttempts}`);
         // 这基于一个假设，heroSMS 不会同时有太多正在激活的 activation（小于 20），这样可以精确获取状态
         const activeActivation = await fetchActiveActivation(
           config,
           normalizedActivationId,
+          waitOptions.abortSignal,
         );
+        throwIfAborted(waitOptions.abortSignal);
         lastStatus = activeActivation;
         const statusCode = activeActivation?.activationStatus
         console.log(`[pollSMSCode]: ${statusCode === '2' ? '已收到' : '等待验证码' }`,);
@@ -909,7 +921,9 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
 
         const statusV2 = await provider.getActivationStatusV2(
           normalizedActivationId,
+          {abortSignal: waitOptions.abortSignal},
         );
+        throwIfAborted(waitOptions.abortSignal);
         const codeFromV2 = extractCodeFromStatusPayload(statusV2);
         if (codeFromV2 && !activeActivation) {
           if (!lastDeliveredActivationSnapshot) {
@@ -927,7 +941,9 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
 
         const status = await provider.getActivationStatus(
           normalizedActivationId,
+          {abortSignal: waitOptions.abortSignal},
         );
+        throwIfAborted(waitOptions.abortSignal);
         lastStatus = status;
 
         const codeFromStatus = extractCodeFromStatusPayload(status);
@@ -947,7 +963,7 @@ export function createHeroSmsProvider(config: HeroSmsProviderConfig) {
         }
 
         if (attempt < pollAttempts) {
-          await delay(pollIntervalMs);
+          await abortableDelay(pollIntervalMs, waitOptions.abortSignal);
         }
       }
       throw new Error(

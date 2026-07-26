@@ -5,6 +5,7 @@ import path from "node:path";
 import {fetch as undiciFetch} from "undici";
 import {appConfig} from "../config.js";
 import {DEFAULT_USER_AGENT} from "../constants.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {
   findLatestVerificationMail as findLatestVerificationMailByFields,
@@ -363,14 +364,17 @@ function findLatestVerificationMail(mails, options = {}) {
 }
 
 async function fetchMailReadContent(options) {
+  throwIfAborted(options.abortSignal);
   if (!options?.messageId) {
     throw new Error("messageId 不能为空");
   }
 
   const response = await undiciFetch(buildMailReadURL(options), {
     method: "GET",
+    signal: options.abortSignal,
     headers: buildMailReadHeaders(options),
   });
+  throwIfAborted(options.abortSignal);
 
   if (!response.ok) {
     throw new Error(`2925邮件内容请求失败: ${response.status} body=${await response.text()}`);
@@ -397,6 +401,7 @@ async function fetchMailReadContent(options) {
 }
 
 async function fetchMailList(options) {
+  throwIfAborted(options.abortSignal);
   if (!options?.mailbox) {
     throw new Error("mailbox 不能为空");
   }
@@ -410,8 +415,10 @@ async function fetchMailList(options) {
   const url = buildMailListURL(options);
   const response = await undiciFetch(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: buildHeaders(options),
   });
+  throwIfAborted(options.abortSignal);
 
   if (!response.ok) {
     throw new Error(`2925邮件列表请求失败: ${response.status} body=${await response.text()}`);
@@ -438,6 +445,7 @@ async function fetchMailList(options) {
 }
 
 async function moveMailsToDeleted(options) {
+  throwIfAborted(options.abortSignal);
   const mailList = options.mailList ?? (await fetchMailList(options));
   const messageIds = Array.isArray(options.messageIds)
     ? options.messageIds.filter((value) => Boolean(value))
@@ -455,6 +463,7 @@ async function moveMailsToDeleted(options) {
   const traceId = options.traceId ?? randomTraceId();
   const response = await undiciFetch(`${MOVE_MAILS_URL}?traceId=${encodeURIComponent(traceId)}`, {
     method: "PUT",
+    signal: options.abortSignal,
     headers: new Headers({
       ...Object.fromEntries(buildHeaders(options).entries()),
       "Content-Type": "application/x-www-form-urlencoded",
@@ -467,6 +476,7 @@ async function moveMailsToDeleted(options) {
       ToFolder: options.toFolder ?? "已删除",
     }),
   });
+  throwIfAborted(options.abortSignal);
 
   if (!response.ok) {
     throw new Error(`2925删除邮件请求失败: ${response.status} body=${await response.text()}`);
@@ -486,6 +496,7 @@ async function moveMailsToDeleted(options) {
 }
 
 async function fetchLatestVerificationCode(options) {
+  throwIfAborted(options.abortSignal);
   const mailList = await fetchMailList(options);
   const matcher = options.matcher ?? /(OpenAI|ChatGPT).*(code)|code.*(OpenAI|ChatGPT)/i;
   const sorted = [...mailList.list].sort((a, b) => b.createTime - a.createTime);
@@ -511,6 +522,7 @@ async function fetchLatestVerificationCode(options) {
         continue;
       }
 
+      throwIfAborted(options.abortSignal);
       const detail = await fetchMailReadContent({
         ...options,
         messageId: mail.messageId,
@@ -559,14 +571,16 @@ async function fetchLatestVerificationCode(options) {
   };
 }
 
-async function fetchLatestVerificationCodeWithSession(targetEmail) {
+async function fetchLatestVerificationCodeWithSession(targetEmail, options = {}) {
   let session = await get2925Session(false);
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    throwIfAborted(options.abortSignal);
     try {
       const result = await fetchLatestVerificationCode({
         mailbox: session.mailbox,
         targetEmail,
+        abortSignal: options.abortSignal,
         bearerToken: session.bearerToken,
         refreshToken: session.refreshToken,
         uid: session.uid,
@@ -683,13 +697,15 @@ export function create2925Provider() {
         : providerMailbox;
       return `${generatedPrefix}_${generateEmailName()}@${GENERATED_EMAIL_DOMAIN}`;
     },
-    async getEmailVerificationCode(email) {
+    async getEmailVerificationCode(email, options = {}) {
       for (let attempt = 1; attempt <= PROVIDER_POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `poll2925Otp: attempt=${attempt}/${PROVIDER_POLL_ATTEMPTS} targetEmail=${email}`,
         );
 
-        const result = await fetchLatestVerificationCodeWithSession(email);
+        const result = await fetchLatestVerificationCodeWithSession(email, options);
+        throwIfAborted(options.abortSignal);
 
         if (result.code) {
           console.log(`2925OtpCode: ${result.code}`);
@@ -700,9 +716,7 @@ export function create2925Provider() {
         }
 
         if (attempt < PROVIDER_POLL_ATTEMPTS) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, PROVIDER_POLL_INTERVAL_MS),
-          );
+          await abortableDelay(PROVIDER_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 

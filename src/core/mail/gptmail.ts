@@ -1,5 +1,6 @@
 import {fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit} from "undici";
 import {appConfig} from "../config.js";
+import {abortableDelay, throwIfAborted} from "../utils.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
@@ -113,10 +114,17 @@ function buildHeaders(extraHeaders: Record<string, string> = {}): Record<string,
   };
 }
 
-async function requestJSON<T>(path: string, init: UndiciRequestInit = {}): Promise<T> {
+async function requestJSON<T>(
+  path: string,
+  init: UndiciRequestInit = {},
+  options: {abortSignal?: AbortSignal} = {},
+): Promise<T> {
   const baseUrl = ensureApiBaseUrlConfigured();
   const url = `${baseUrl}${path}`;
-  const response = await gptMailFetch(url, init);
+  const response = await gptMailFetch(url, {
+    ...init,
+    signal: options.abortSignal ?? init.signal,
+  });
   const rawBody = await response.text();
   if (!response.ok) {
     throw new Error(`GPTMail 请求失败: ${response.status} body=${rawBody}`);
@@ -152,7 +160,7 @@ async function generateMailbox(): Promise<string> {
   return email;
 }
 
-async function listEmails(email: string): Promise<GPTMailEmailItem[]> {
+async function listEmails(email: string, options: {abortSignal?: AbortSignal} = {}): Promise<GPTMailEmailItem[]> {
   const mailbox = normalizeEmail(email);
   if (!mailbox.includes("@")) {
     throw new Error(`邮箱格式不正确: ${email}`);
@@ -161,6 +169,7 @@ async function listEmails(email: string): Promise<GPTMailEmailItem[]> {
   url.searchParams.set("email", mailbox);
   const response = await gptMailFetch(url, {
     method: "GET",
+    signal: options.abortSignal,
     headers: buildHeaders(),
   });
   const rawBody = await response.text();
@@ -178,19 +187,19 @@ async function listEmails(email: string): Promise<GPTMailEmailItem[]> {
   return Array.isArray(data?.emails) ? data.emails : [];
 }
 
-async function getEmailDetail(id: string): Promise<GPTMailEmailItem> {
+async function getEmailDetail(id: string, options: {abortSignal?: AbortSignal} = {}): Promise<GPTMailEmailItem> {
   const data = await requestJSON<GPTMailEmailItem>(`/api/email/${encodeURIComponent(id)}`, {
     method: "GET",
     headers: buildHeaders(),
-  });
+  }, options);
   return data;
 }
 
-async function deleteEmail(id: string): Promise<void> {
+async function deleteEmail(id: string, options: {abortSignal?: AbortSignal} = {}): Promise<void> {
   await requestJSON(`/api/email/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: buildHeaders(),
-  });
+  }, options);
 }
 
 async function getLatestEmailSummary(email: string) {
@@ -243,20 +252,22 @@ export function createGPTMailProvider() {
       ensureApiKeyConfigured();
       return generateMailbox();
     },
-    async getEmailVerificationCode(email: string) {
+    async getEmailVerificationCode(email: string, options: {abortSignal?: AbortSignal} = {}) {
       ensureApiBaseUrlConfigured();
       ensureApiKeyConfigured();
 
       for (let attempt = 1; attempt <= GPTMAIL_POLL_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.abortSignal);
         console.log(
           `pollGPTMailOtp: attempt=${attempt}/${GPTMAIL_POLL_ATTEMPTS} targetEmail=${email}`,
         );
 
-        const list = await listEmails(email);
+        const list = await listEmails(email, options);
         const details = await Promise.all(
           list.map(async (mail) => {
+            throwIfAborted(options.abortSignal);
             const id = String(mail?.id ?? "").trim();
-            const detail = id ? await getEmailDetail(id) : mail;
+            const detail = id ? await getEmailDetail(id, options) : mail;
             return {
               ...detail,
               id: String(detail?.id ?? mail?.id ?? ""),
@@ -306,17 +317,18 @@ export function createGPTMailProvider() {
             };
           }),
         );
+        throwIfAborted(options.abortSignal);
         const matchedMail = findLatestVerificationMail(details, {
           targetEmail: normalizeEmail(email),
         });
         if (matchedMail?.verificationCode) {
-          await deleteEmail(matchedMail.id);
+          await deleteEmail(matchedMail.id, options);
           console.log(`gptMailOtpCode: ${matchedMail.verificationCode}`);
           return matchedMail.verificationCode;
         }
 
         if (attempt < GPTMAIL_POLL_ATTEMPTS) {
-          await new Promise((resolve) => setTimeout(resolve, GPTMAIL_POLL_INTERVAL_MS));
+          await abortableDelay(GPTMAIL_POLL_INTERVAL_MS, options.abortSignal);
         }
       }
 
