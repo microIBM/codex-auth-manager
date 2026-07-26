@@ -14,6 +14,7 @@ import {OpenAIClient, type SavedAuthRecord} from "../core/openai.js";
 import {createSMSBroker} from "../core/sms/index.js";
 import type {ISMSActivationBroker} from "../core/sms/activation-broker.js";
 import {normalizeEmailAddress} from "../core/email-normalize.js";
+import {allowManyAbortListeners} from "../core/utils.js";
 import {getAccount, getAccountPassword, setAccountPassword, upsertAccountFromAuthRecord, loadAuthRecord, updateAuthFileStep} from "./auth-service.js";
 import {
   JobCancelledError,
@@ -175,6 +176,8 @@ function logEmailOtpCode(targetEmail: string, code: string): void {
 
 function createCancellationSignal(jobId?: number, parentSignal?: AbortSignal) {
   const controller = new AbortController();
+  allowManyAbortListeners(controller.signal);
+  allowManyAbortListeners(parentSignal);
   let cancelled = false;
   const cancel = () => {
     cancelled = true;
@@ -452,10 +455,14 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       shouldCancel,
       abortSignal: options.abortSignal,
     });
-    const result = await client.authLoginHTTP();
-    console.log(`[授权成功] 邮箱：${client.email} 密码：${password} 授权文件：${result.authFile ?? ""}`);
-    await importAuthFileFromResult(result.authFile, password);
-    return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
+    try {
+      const result = await client.authLoginHTTP();
+      console.log(`[授权成功] 邮箱：${client.email} 密码：${password} 授权文件：${result.authFile ?? ""}`);
+      await importAuthFileFromResult(result.authFile, password);
+      return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
+    } finally {
+      await client.dispose();
+    }
   }
 
   if (options.directSignupAuth || !options.saveAccessToken) {
@@ -496,6 +503,8 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
         setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
       }
       throw error;
+    } finally {
+      await client.dispose();
     }
   }
 
@@ -521,25 +530,32 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     if (mailbox) {
       setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
     }
+    await registerClient.dispose();
     throw error;
   }
 
   if (options.saveAccessToken) {
-    throwIfJobCancelled(options.jobId);
-    const accessToken = await registerClient.getChatGPTAccessToken();
-    const accessTokenFile = await registerClient.saveChatGPTAccessToken(accessToken);
-    const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
-    await importAuthFileFromResult(accessTokenFile, password, {
-      sourceId: mailbox?.source_id ?? null,
-      mailboxId: mailbox?.id ?? null,
-    });
-    console.log(`[注册成功] 邮箱：${registerClient.email} 密码：${password}`);
-    console.log(`[access_token_file] ${accessTokenFile}`);
-    if (mailbox) {
-      markMailboxUsed(mailbox.id, true, "used");
+    try {
+      throwIfJobCancelled(options.jobId);
+      const accessToken = await registerClient.getChatGPTAccessToken();
+      const accessTokenFile = await registerClient.saveChatGPTAccessToken(accessToken);
+      const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
+      await importAuthFileFromResult(accessTokenFile, password, {
+        sourceId: mailbox?.source_id ?? null,
+        mailboxId: mailbox?.id ?? null,
+      });
+      console.log(`[注册成功] 邮箱：${registerClient.email} 密码：${password}`);
+      console.log(`[access_token_file] ${accessTokenFile}`);
+      if (mailbox) {
+        markMailboxUsed(mailbox.id, true, "used");
+      }
+      return {email: registerClient.email, ...summarizeSmsBrokerUsage(smsBroker)};
+    } finally {
+      await registerClient.dispose();
     }
-    return {email: registerClient.email, ...summarizeSmsBrokerUsage(smsBroker)};
   }
+
+  await registerClient.dispose();
 
   const loginClient = new OpenAIClient({
     email: registerClient.email,
@@ -577,6 +593,8 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
     }
     throw error;
+  } finally {
+    await loginClient.dispose();
   }
 }
 
@@ -908,6 +926,8 @@ export async function reauthorizeAccount(
       addJobEvent(jobId, "error", `重新授权失败: ${message}`);
     }
     throw error;
+  } finally {
+    await client.dispose();
   }
 }
 
@@ -967,5 +987,7 @@ export async function manualReauthAccount(
     const message = error instanceof Error ? error.message : String(error);
     addJobEvent(jobId, "error", `人工重登失败: ${message}`);
     throw error;
+  } finally {
+    await client.dispose();
   }
 }

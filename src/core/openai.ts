@@ -30,7 +30,7 @@ import {
 } from "./constants.js";
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
 import { fetchSentinelToken, type SentinelFetch } from "./sentinel.js";
-import { pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
+import { allowManyAbortListeners, pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
 import { createProxyDispatcher, normalizeBrowserProxyUrl } from "./proxy.js";
 import type { ActivationLease, ISMSActivationBroker } from "./sms/activation-broker.js";
 
@@ -175,6 +175,7 @@ export class OpenAIClient {
   private readonly abortController: AbortController;
   private readonly browserTransportEnabled: boolean;
   private browserTransportFallbackWarned = false;
+  private detachExternalAbortSignal?: () => void;
   private browser?: Browser;
   private browserContext?: BrowserContext;
   private browserPage?: Page;
@@ -184,12 +185,15 @@ export class OpenAIClient {
     this.smsVerificationDisabled = Boolean(options.smsVerificationDisabled);
     this.shouldCancel = options.shouldCancel;
     this.abortController = new AbortController();
+    allowManyAbortListeners(this.abortController.signal);
     if (options.abortSignal) {
+      allowManyAbortListeners(options.abortSignal);
       const abort = () => this.abortRegistration();
       if (options.abortSignal.aborted) {
         abort();
       } else {
         options.abortSignal.addEventListener("abort", abort, {once: true});
+        this.detachExternalAbortSignal = () => options.abortSignal?.removeEventListener("abort", abort);
       }
     }
     this.email = normalizeEmailAddress(options.email);
@@ -241,6 +245,12 @@ export class OpenAIClient {
     void this.closeBrowserTransport();
   }
 
+  async dispose(): Promise<void> {
+    this.detachExternalAbortSignal?.();
+    this.detachExternalAbortSignal = undefined;
+    await this.closeBrowserTransport();
+  }
+
   private throwIfCancelled(): void {
     if (this.shouldCancel?.()) {
       this.abortRegistration();
@@ -257,6 +267,7 @@ export class OpenAIClient {
 
   private raceCancellation<T>(operation: Promise<T>): Promise<T> {
     const signal = this.abortController.signal;
+    allowManyAbortListeners(signal);
     if (signal.aborted) {
       operation.catch(() => undefined);
       throw this.createCancellationError();

@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
+import { setMaxListeners } from "node:events";
+
+const DEFAULT_ABORT_SIGNAL_MAX_LISTENERS = 100;
 
 export function randomUrlSafeString(length: number): string {
   const size = length > 0 ? length : 32;
@@ -19,8 +22,23 @@ export function throwIfAborted(abortSignal?: AbortSignal): void {
   }
 }
 
+export function allowManyAbortListeners(
+  abortSignal?: AbortSignal,
+  maxListeners = DEFAULT_ABORT_SIGNAL_MAX_LISTENERS,
+): void {
+  if (!abortSignal) {
+    return;
+  }
+  try {
+    setMaxListeners(maxListeners, abortSignal);
+  } catch {
+    // Older runtimes may not support EventTarget here; cancellation still works.
+  }
+}
+
 export function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
   throwIfAborted(abortSignal);
+  allowManyAbortListeners(abortSignal);
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
