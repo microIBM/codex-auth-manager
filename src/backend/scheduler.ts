@@ -1,17 +1,53 @@
-import cron, {type ScheduledTask} from "node-cron";
 import {checkAccount, listAccounts, mapWithConcurrency, pushAccountToBoundPlatforms, resolveDefaultConcurrency} from "./auth-service.js";
 import {getSettings, upsertSetting} from "./db.js";
 import {addJobEvent, createJob, runJob} from "./job-service.js";
 import {reauthorizeAccount} from "./registration-service.js";
 import {syncPlatformCredentials} from "./credential-sync-service.js";
 
-let task: ScheduledTask | null = null;
+let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
+let schedulerGeneration = 0;
 
-function dailyTimeToCron(time: string): string {
+function parseDailyTime(time: string): {hour: number; minute: number} {
   const [hourRaw, minuteRaw] = time.split(":");
   const hour = Math.min(23, Math.max(0, Number.parseInt(hourRaw ?? "3", 10) || 3));
   const minute = Math.min(59, Math.max(0, Number.parseInt(minuteRaw ?? "30", 10) || 30));
-  return `${minute} ${hour} * * *`;
+  return {hour, minute};
+}
+
+function getNextRunDelayMs(time: string, now = new Date()): number {
+  const {hour, minute} = parseDailyTime(time);
+  const next = new Date(now);
+  next.setHours(hour, minute, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return Math.max(0, next.getTime() - now.getTime());
+}
+
+function stopSchedulerTimer(): void {
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+}
+
+function scheduleNextRun(dailyTime: string, generation: number): void {
+  schedulerTimer = setTimeout(() => {
+    schedulerTimer = null;
+    if (generation !== schedulerGeneration) {
+      return;
+    }
+    void runScheduledRefresh().finally(() => {
+      if (generation !== schedulerGeneration) {
+        return;
+      }
+      const config = getSchedulerConfig();
+      if (config.enabled) {
+        scheduleNextRun(config.dailyTime, generation);
+      }
+    });
+  }, getNextRunDelayMs(dailyTime));
+  schedulerTimer.unref?.();
 }
 
 export function getSchedulerConfig(): {enabled: boolean; dailyTime: string; lastRunStatus: string; nextRunHint: string} {
@@ -37,17 +73,13 @@ export function updateSchedulerConfig(input: {enabled?: boolean; dailyTime?: str
 }
 
 export function startScheduler(): void {
-  if (task) {
-    task.stop();
-    task = null;
-  }
+  schedulerGeneration += 1;
+  stopSchedulerTimer();
   const config = getSchedulerConfig();
   if (!config.enabled) {
     return;
   }
-  task = cron.schedule(dailyTimeToCron(config.dailyTime), () => {
-    void runScheduledRefresh();
-  });
+  scheduleNextRun(config.dailyTime, schedulerGeneration);
 }
 
 export async function runScheduledRefresh(): Promise<void> {

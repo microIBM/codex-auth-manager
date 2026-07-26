@@ -19,9 +19,11 @@ const commands = [
   ["vite", process.execPath, [resolveBin("vite"), "--config", "web/vite.config.ts"]],
 ];
 
+let rawModeEnabled = false;
+
 const children = commands.map(([label, command, args]) => {
   const child = spawn(command, args, {
-    stdio: ["inherit", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     shell: false,
     detached: process.platform !== "win32",
     windowsHide: true,
@@ -39,6 +41,26 @@ const children = commands.map(([label, command, args]) => {
 
 let shuttingDown = false;
 let shutdownPromise = null;
+
+function enableCtrlCInputHandler() {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    process.stdin.setRawMode(true);
+    rawModeEnabled = true;
+  }
+  process.stdin.resume();
+  process.stdin.on("data", (chunk) => {
+    if (Buffer.isBuffer(chunk) && chunk.includes(3)) {
+      void shutdown(0);
+    }
+  });
+}
+
+function restoreStdin() {
+  if (rawModeEnabled && process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    process.stdin.setRawMode(false);
+    rawModeEnabled = false;
+  }
+}
 
 function waitForClose(child, timeoutMs = 5000) {
   if (child.exitCode !== null || child.signalCode !== null) {
@@ -84,6 +106,7 @@ async function shutdown(exitCode = process.exitCode ?? 0) {
 
   shuttingDown = true;
   process.exitCode = typeof exitCode === "number" ? exitCode : 0;
+  restoreStdin();
 
   shutdownPromise = Promise.all(children.map(async (child) => {
     killProcessTree(child);
@@ -102,3 +125,11 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   void shutdown(0);
 });
+
+process.on("SIGBREAK", () => {
+  void shutdown(0);
+});
+
+process.on("exit", restoreStdin);
+
+enableCtrlCInputHandler();
