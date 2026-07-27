@@ -20,10 +20,11 @@ const HOTMAIL_REST_READ_SCOPE = "https://outlook.office.com/Mail.Read offline_ac
 const HOTMAIL_GRAPH_READ_SCOPE = "openid profile offline_access User.Read Mail.Read";
 const HOTMAIL_GRAPH_QUALIFIED_READ_SCOPE = "openid profile offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read";
 const HOTMAIL_LEGACY_SCOPE = "openid profile User.Read Mail.ReadWrite Mail.Send Mail.Read";
-const HOTMAIL_POLL_ATTEMPTS = 12;
+const HOTMAIL_POLL_ATTEMPTS = 24;
 const HOTMAIL_POLL_INTERVAL_MS = 5000;
-const HOTMAIL_MESSAGE_FETCH_LIMIT = 10;
+const HOTMAIL_MESSAGE_FETCH_LIMIT = 25;
 const HOTMAIL_FOLDER_IDS = ["inbox", "junkemail"];
+const HOTMAIL_DIAGNOSTIC_MESSAGE_LIMIT = 3;
 const aliasAccountMap = new Map();
 let accountCache = null;
 let cachedDispatcher = null;
@@ -445,6 +446,49 @@ function normalizeMessage(message, folderId) {
   };
 }
 
+function matchesOpenAiHotmailMessage(mail) {
+  return /(OpenAI|ChatGPT)/i.test(
+    `${mail.subject ?? ""}\n${mail.bodyPreview ?? ""}\n${mail.from ?? ""}`,
+  );
+}
+
+function normalizeDiagnosticTimestamp(value) {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function summarizeHotmailOtpCandidates(messages, targetEmail, options = {}) {
+  const normalizedTarget = normalizeEmail(targetEmail);
+  const minTimestamp = normalizeDiagnosticTimestamp(options.minTimestamp);
+  return messages
+    .filter(matchesOpenAiHotmailMessage)
+    .slice(0, HOTMAIL_DIAGNOSTIC_MESSAGE_LIMIT)
+    .map((message) => {
+      const recipientMatched = normalizedTarget && Array.isArray(message.toRecipients) && message.toRecipients.length > 0
+        ? message.toRecipients.includes(normalizedTarget)
+        : null;
+      const text = `${message.subject ?? ""}\n${message.bodyPreview ?? ""}\n${message.bodyContent ?? ""}`;
+      return {
+        folderId: message.folderId,
+        from: message.from,
+        subject: message.subject,
+        receivedAt: message.receivedDateTime,
+        beforeMinTimestamp: minTimestamp > 0 && message.receivedAtMs > 0
+          ? message.receivedAtMs < minTimestamp
+          : null,
+        recipientMatched,
+        hasSixDigit: /\b(?:\d[\s-]*){6}\b/.test(text),
+      };
+    });
+}
+
 async function listFolderMessages(account, folderId, options = {}) {
   let payload = null;
   let apiMode = "graph";
@@ -506,7 +550,7 @@ async function getLatestVerificationMessage(targetEmail, account, options = {}) 
   messages.sort((a, b) => b.receivedAtMs - a.receivedAtMs);
 
   console.log(`hotmailMessagesFetched: targetEmail=${targetEmail} mailbox=${account.loginHint} count=${messages.length}`);
-  return findLatestVerificationMail(
+  const matched = findLatestVerificationMail(
     messages.map((message) => ({
       ...message,
       recipient: message.toRecipients,
@@ -517,12 +561,17 @@ async function getLatestVerificationMessage(targetEmail, account, options = {}) 
     {
       targetEmail,
       minTimestamp: options.minTimestamp,
-      candidateMatcher: (mail) =>
-        /(OpenAI|ChatGPT)/i.test(
-          `${mail.subject ?? ""}\n${mail.bodyPreview ?? ""}\n${mail.from ?? ""}`,
-        ),
+      candidateMatcher: matchesOpenAiHotmailMessage,
     },
   );
+  if (!matched && options.debugNoMatch) {
+    const minTimestamp = normalizeDiagnosticTimestamp(options.minTimestamp);
+    const minTimestampText = minTimestamp > 0 ? new Date(minTimestamp).toISOString() : "-";
+    console.log(
+      `hotmailOtpNoMatch: targetEmail=${targetEmail} mailbox=${account.loginHint} minTimestamp=${minTimestampText} latestOpenAi=${JSON.stringify(summarizeHotmailOtpCandidates(messages, targetEmail, options))}`,
+    );
+  }
+  return matched;
 }
 
 async function getLatestHotmailEmailSummary(targetEmail, account) {
@@ -547,10 +596,7 @@ async function getLatestHotmailEmailSummary(targetEmail, account) {
     {
       targetEmail,
       rememberLastCode: false,
-      candidateMatcher: (mail) =>
-        /(OpenAI|ChatGPT)/i.test(
-          `${mail.subject ?? ""}\n${mail.bodyPreview ?? ""}\n${mail.from ?? ""}`,
-        ),
+      candidateMatcher: matchesOpenAiHotmailMessage,
     },
   );
   return {
@@ -606,7 +652,10 @@ function createHotmailGraphProvider(resolveAccount = resolveAccountForEmail) {
           `pollHotmailOtp: attempt=${attempt}/${HOTMAIL_POLL_ATTEMPTS} targetEmail=${email} mailbox=${account.loginHint}`,
         );
 
-        const message = await getLatestVerificationMessage(email, account, options);
+        const message = await getLatestVerificationMessage(email, account, {
+          ...options,
+          debugNoMatch: attempt === HOTMAIL_POLL_ATTEMPTS,
+        });
         throwIfAborted(options.abortSignal);
         if (message?.verificationCode) {
           console.log(`hotmailOtpCode: ${message.verificationCode}`);
