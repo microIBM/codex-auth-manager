@@ -21,6 +21,7 @@ import {
   AUTH_EMAIL_OTP_VALIDATE_URL,
   AUTH_OAUTH_TOKEN_URLS,
   AUTH_PASSWORD_VERIFY_URL,
+  AUTH_PASSWORDLESS_OTP_SEND_URL,
   AUTH_REGISTER_URL,
   AUTH_WORKSPACE_SELECT_URL,
   CHATGPT_BASE_URL,
@@ -29,6 +30,7 @@ import {
   DEFAULT_USER_AGENT,
 } from "./constants.js";
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
+import type {EmailVerificationCodeOptions} from "./mailbox.js";
 import { fetchSentinelToken, type SentinelFetch } from "./sentinel.js";
 import { allowManyAbortListeners, pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
 import { createProxyDispatcher, normalizeBrowserProxyUrl } from "./proxy.js";
@@ -42,6 +44,7 @@ const FETCH_RETRY_DELAY_MS = 1500;
 const SMS_NUMBER_ACQUIRE_INTERVAL_MS = 1000;
 const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
 const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
+const EMAIL_OTP_TIMESTAMP_SKEW_MS = 10_000;
 
 function resolveProxyUrl(): string {
   return resolveOpenAIProxyUrl();
@@ -63,13 +66,105 @@ function formatCommandAuthDirName(date: Date): string {
 interface ContinueResponse {
   continue_url: string;
   method?: string;
-  page?: {
-    type?: string;
-    backstack_behavior?: string;
-    payload?: {
-      url?: string;
-    };
+  page?: AuthFlowPage;
+}
+
+interface AuthFlowPage {
+  type?: string;
+  backstack_behavior?: string;
+  payload?: {
+    url?: string;
+    factor_id?: string;
+    mfa_request_id?: string;
+    query_params?: string;
   };
+}
+
+interface AuthFlowResponse {
+  continue_url?: string;
+  page?: AuthFlowPage;
+}
+
+function normalizeFlowUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return value.split(/[?#]/, 1)[0];
+  }
+}
+
+function isLoginPasswordUrl(value: string): boolean {
+  return normalizeFlowUrl(value) === `${AUTH_BASE_URL}/log-in/password`;
+}
+
+function isEmailVerificationUrl(value: string): boolean {
+  const normalized = normalizeFlowUrl(value);
+  return normalized === `${AUTH_BASE_URL}/email-verification`
+    || normalized === `${AUTH_BASE_URL}/email-verification/register`
+    || normalized === `${AUTH_BASE_URL}/log-in/email-verification`
+    || normalized === `${AUTH_BASE_URL}/log-in/email-otp`;
+}
+
+function authPageUrl(path: string): string {
+  return `${AUTH_BASE_URL}${path}`;
+}
+
+function mapAuthFlowPageToUrl(page?: AuthFlowPage): string | undefined {
+  switch (page?.type) {
+    case "about_you":
+      return authPageUrl("/about-you");
+    case "add_phone":
+      return authPageUrl("/add-phone");
+    case "create_account_password":
+      return authPageUrl("/create-account/password");
+    case "email_otp_send":
+      return AUTH_EMAIL_OTP_SEND_URL;
+    case "email_otp_verification":
+      return authPageUrl("/email-verification");
+    case "email_otp_verification_registration":
+      return authPageUrl("/email-verification/register");
+    case "external_url":
+      return page.payload?.url;
+    case "login_password":
+      return authPageUrl("/log-in/password");
+    case "login_start":
+      return authPageUrl("/log-in");
+    case "login_or_signup_start":
+      return authPageUrl("/log-in-or-create-account");
+    case "mfa_challenge":
+      return page.payload?.factor_id
+        ? authPageUrl(`/mfa-challenge/${page.payload.factor_id}`)
+        : authPageUrl("/mfa-challenge");
+    case "phone_otp_verification":
+      return authPageUrl("/phone-verification");
+    case "push_auth_verification": {
+      const requestID = page.payload?.mfa_request_id;
+      const query = page.payload?.query_params ? `?${page.payload.query_params}` : "";
+      return requestID ? authPageUrl(`/push-auth-verification/${requestID}${query}`) : undefined;
+    }
+    case "sign_in_with_chatgpt_consent":
+      return authPageUrl("/sign-in-with-chatgpt/consent");
+    case "sign_in_with_chatgpt_codex_consent":
+      return authPageUrl("/sign-in-with-chatgpt/codex/consent");
+    case "sign_in_with_chatgpt_codex_org":
+      return authPageUrl("/sign-in-with-chatgpt/codex/organization");
+    case "workspace":
+      return authPageUrl("/workspace");
+    default:
+      return undefined;
+  }
+}
+
+function resolveAuthFlowUrl(payload: AuthFlowResponse, operation: string): string {
+  if (typeof payload.continue_url === "string" && payload.continue_url.trim()) {
+    return payload.continue_url;
+  }
+  const pageURL = mapAuthFlowPageToUrl(payload.page);
+  if (pageURL) {
+    return pageURL;
+  }
+  throw new Error(`${operation}响应缺少 continue_url/page: ${JSON.stringify(payload)}`);
 }
 
 interface AuthSessionWorkspace {
@@ -137,7 +232,7 @@ export interface OpenAIClientOptions {
   deviceProfile?: DeviceProfile;
   manualMode?: boolean;
   emailAddressProvider?: () => Promise<string>;
-  emailOtpProvider?: (email: string, excludeCodes: string[]) => Promise<string>;
+  emailOtpProvider?: (email: string, options: EmailVerificationCodeOptions) => Promise<string>;
   progressCallback?: (step: number | string, total: number, message: string) => void;
   signupScreenHint?: string;
   smsBroker?: ISMSActivationBroker;
@@ -164,7 +259,7 @@ export class OpenAIClient {
   readonly clientHints: ReturnType<typeof getDeviceClientHints>;
   readonly signupScreenHint: string;
   readonly emailAddressProvider?: () => Promise<string>;
-  readonly emailOtpProvider?: (email: string, excludeCodes: string[]) => Promise<string>;
+  readonly emailOtpProvider?: (email: string, options: EmailVerificationCodeOptions) => Promise<string>;
   readonly progressCallback?: (step: number | string, total: number, message: string) => void;
   state = "";
   codeVerifier = "";
@@ -176,6 +271,7 @@ export class OpenAIClient {
   private readonly browserTransportEnabled: boolean;
   private browserTransportFallbackWarned = false;
   private detachExternalAbortSignal?: () => void;
+  private emailOtpRequestedAtMs = 0;
   private browser?: Browser;
   private browserContext?: BrowserContext;
   private browserPage?: Page;
@@ -482,10 +578,10 @@ export class OpenAIClient {
     this.logProgress(step++, totalSteps, "提交注册邮箱");
     let continueURL = await this.authorizeContinueForSignup(this.signupScreenHint);
 
-    if (continueURL === `${AUTH_BASE_URL}/log-in/password`) {
+    if (isLoginPasswordUrl(continueURL)) {
       totalSteps += 1;
-      this.logProgress(step++, totalSteps, "提交登录密码");
-      continueURL = await this.passwordVerify();
+      this.logProgress(step++, totalSteps, "邮箱已注册，发送 one-time code");
+      continueURL = await this.sendPasswordlessLoginOtp();
     }
 
     if (continueURL === `${AUTH_BASE_URL}/create-account/password`) {
@@ -500,7 +596,7 @@ export class OpenAIClient {
       continueURL = await this.sendEmailOtp();
     }
 
-    if (continueURL === `${AUTH_BASE_URL}/email-verification`) {
+    if (isEmailVerificationUrl(continueURL)) {
       totalSteps += 1;
       this.logProgress(step++, totalSteps, "提交邮箱验证码");
       continueURL = await this.emailOtpValidate();
@@ -666,8 +762,8 @@ export class OpenAIClient {
         body: JSON.stringify({ code }),
       });
       if (response.ok) {
-        const payload = (await response.json()) as ContinueResponse;
-        return payload.continue_url;
+        const payload = (await response.json()) as AuthFlowResponse;
+        return resolveAuthFlowUrl(payload, "EmailOtpValidate");
       }
 
       lastError = await this.formatErrorResponse(response);
@@ -705,12 +801,13 @@ export class OpenAIClient {
     return payload.continue_url;
   }
 
-  async sendEmailOtp(): Promise<string> {
+  async sendEmailOtp(referer = `${AUTH_BASE_URL}/create-account/password`): Promise<string> {
+    const requestedAt = Date.now();
     const response = await this.fetch(AUTH_EMAIL_OTP_SEND_URL, {
       method: "GET",
       headers: {
         accept: "application/json",
-        referer: `${AUTH_BASE_URL}/create-account/password`,
+        referer,
         "user-agent": this.userAgent,
         "accept-language": this.deviceProfile.acceptLanguage,
         "sec-ch-ua": this.clientHints.secChUa,
@@ -726,8 +823,34 @@ export class OpenAIClient {
         `EmailOtpSend请求失败: ${await this.formatErrorResponse(response)}`,
       );
     }
-    const payload = (await response.json()) as ContinueResponse;
-    return payload.continue_url;
+    this.emailOtpRequestedAtMs = requestedAt;
+    const payload = (await response.json()) as AuthFlowResponse;
+    return resolveAuthFlowUrl(payload, "EmailOtpSend");
+  }
+
+  async sendPasswordlessLoginOtp(): Promise<string> {
+    const requestedAt = Date.now();
+    const response = await this.fetch(AUTH_PASSWORDLESS_OTP_SEND_URL, {
+      method: "POST",
+      headers: this.createBrowserHeaders({
+        accept: "application/json",
+        "content-type": "application/json",
+        origin: AUTH_BASE_URL,
+        referer: `${AUTH_BASE_URL}/log-in/password`,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-access-flow-invocation-id": randomUUID(),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `PasswordlessOtpSend请求失败: ${await this.formatErrorResponse(response)}`,
+      );
+    }
+    this.emailOtpRequestedAtMs = requestedAt;
+    const payload = (await response.json()) as AuthFlowResponse;
+    return resolveAuthFlowUrl(payload, "PasswordlessOtpSend");
   }
 
   async validatePhone(code: string) {
@@ -894,18 +1017,22 @@ export class OpenAIClient {
   }
 
   private async resolveEmailOtpCode(excludeCodes: string[] = []): Promise<string> {
+    const otpOptions: EmailVerificationCodeOptions = {
+      excludeCodes,
+      minTimestamp: this.emailOtpRequestedAtMs > 0
+        ? Math.max(0, this.emailOtpRequestedAtMs - EMAIL_OTP_TIMESTAMP_SKEW_MS)
+        : undefined,
+      abortSignal: this.abortController.signal,
+    };
     if (this.emailOtpProvider) {
-      return this.emailOtpProvider(this.email, excludeCodes);
+      return this.emailOtpProvider(this.email, otpOptions);
     }
     if (this.manualMode) {
       console.log(`manualEmailOtp: targetEmail=${this.email}`);
       return this.promptEmailOtp();
     }
     console.log(`autoEmailOtp: provider=${MAILBOX_CONFIG.provider} targetEmail=${this.email}`);
-    const code = await getEmailVerificationCode(this.email, {
-      excludeCodes,
-      abortSignal: this.abortController.signal,
-    });
+    const code = await getEmailVerificationCode(this.email, otpOptions);
     console.log(`[邮箱验证码] ${this.email} code=${code}`);
     return code;
   }

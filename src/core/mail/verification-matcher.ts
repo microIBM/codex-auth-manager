@@ -17,6 +17,7 @@ interface FindVerificationMailOptions<T> {
     candidateMatcher?: (mail: T) => boolean;
     rememberLastCode?: boolean;
     excludeCodes?: string[];
+    minTimestamp?: number;
 }
 
 const lastVerificationCodeByEmail = new Map<string, string>();
@@ -49,6 +50,18 @@ function normalizeTextForCodeMatching(text: string): string {
 function normalizeSixDigitCode(value: string | undefined): string {
   const digitsOnly = String(value ?? "").replace(/\D/g, "");
   return digitsOnly.length === 6 ? digitsOnly : "";
+}
+
+function normalizeTimestampMs(value: unknown): number {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function collectCodeCandidates(text: string): string[] {
@@ -152,11 +165,17 @@ export function findLatestVerificationMail<T extends VerificationMailCandidate>(
       .map((code) => normalizeSixDigitCode(code))
       .filter(Boolean),
   );
+  const minTimestamp = normalizeTimestampMs(options.minTimestamp);
   const sorted = [...mails].sort(
-    (left, right) => Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0),
+    (left, right) => normalizeTimestampMs(right.timestamp) - normalizeTimestampMs(left.timestamp),
   );
 
   for (const mail of sorted) {
+    const mailTimestamp = normalizeTimestampMs(mail.timestamp);
+    if (minTimestamp > 0 && mailTimestamp > 0 && mailTimestamp < minTimestamp) {
+      continue;
+    }
+
     if (targetEmail) {
       const recipients = normalizeRecipientList(mail.recipient);
       if (recipients.length > 0 && !recipients.some((recipient) => mailboxMatchesTarget(recipient, targetEmail))) {

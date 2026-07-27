@@ -516,6 +516,7 @@ async function getLatestVerificationMessage(targetEmail, account, options = {}) 
     })),
     {
       targetEmail,
+      minTimestamp: options.minTimestamp,
       candidateMatcher: (mail) =>
         /(OpenAI|ChatGPT)/i.test(
           `${mail.subject ?? ""}\n${mail.bodyPreview ?? ""}\n${mail.from ?? ""}`,

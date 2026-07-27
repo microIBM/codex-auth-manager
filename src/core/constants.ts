@@ -20,6 +20,9 @@ export const AUTH_REGISTER_URL =
 export const AUTH_EMAIL_OTP_SEND_URL =
   "https://auth.openai.com/api/accounts/email-otp/send";
 
+export const AUTH_PASSWORDLESS_OTP_SEND_URL =
+  "https://auth.openai.com/api/accounts/passwordless/send-otp";
+
 export const AUTH_OAUTH_TOKEN_URLS = [
   "https://auth.openai.com/api/oauth/oauth2/token",
   "https://auth.openai.com/oauth/token",

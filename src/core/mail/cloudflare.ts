@@ -3,6 +3,7 @@ import {generateEmailName} from "./generate-email-name.js";
 import {Agent, type Dispatcher, fetch as undiciFetch, ProxyAgent, type RequestInit as UndiciRequestInit} from "undici";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 import {abortableDelay, throwIfAborted} from "../utils.js";
+import type {EmailVerificationCodeOptions} from "../mailbox.js";
 
 
 interface CloudflareMailItem {
@@ -155,7 +156,7 @@ export function createCloudflareProvider() {
       const domain = ensureDomainConfigured();
       return `${generateEmailName()}@${domain}`;
     },
-    async getEmailVerificationCode(email: string, options: {abortSignal?: AbortSignal} = {}) {
+    async getEmailVerificationCode(email: string, options: EmailVerificationCodeOptions = {}) {
       ensureDomainConfigured();
       ensureApiBaseUrlConfigured();
       ensureApiKeyConfigured();
@@ -179,6 +180,7 @@ export function createCloudflareProvider() {
         }));
         const matchedMail = findLatestVerificationMail(candidates, {
           targetEmail: buildMailbox(email),
+          minTimestamp: options.minTimestamp,
         });
         if (matchedMail?.verificationCode) {
           console.log(`cloudflareOtpCode: ${matchedMail.verificationCode}`);

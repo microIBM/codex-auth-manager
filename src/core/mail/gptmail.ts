@@ -3,6 +3,7 @@ import {appConfig} from "../config.js";
 import {abortableDelay, throwIfAborted} from "../utils.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
+import type {EmailVerificationCodeOptions} from "../mailbox.js";
 
 interface GPTMailEnvelope<T> {
     success?: boolean;
@@ -252,7 +253,7 @@ export function createGPTMailProvider() {
       ensureApiKeyConfigured();
       return generateMailbox();
     },
-    async getEmailVerificationCode(email: string, options: {abortSignal?: AbortSignal} = {}) {
+    async getEmailVerificationCode(email: string, options: EmailVerificationCodeOptions = {}) {
       ensureApiBaseUrlConfigured();
       ensureApiKeyConfigured();
 
@@ -320,6 +321,7 @@ export function createGPTMailProvider() {
         throwIfAborted(options.abortSignal);
         const matchedMail = findLatestVerificationMail(details, {
           targetEmail: normalizeEmail(email),
+          minTimestamp: options.minTimestamp,
         });
         if (matchedMail?.verificationCode) {
           await deleteEmail(matchedMail.id, options);

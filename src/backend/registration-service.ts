@@ -34,6 +34,7 @@ import {
   setMailboxLastError,
 } from "./mailbox-service.js";
 import {MAILBOX_CONFIG} from "../core/mailbox.js";
+import type {EmailVerificationCodeOptions} from "../core/mailbox.js";
 import {
   resolvePushServices,
   saveAuthFileJsonObjectToCPAService,
@@ -85,6 +86,26 @@ interface SingleRegistrationResult {
     email: string;
     smsNumbersUsed: number;
     smsSuccessCount: number;
+}
+
+interface RegistrationFailureError extends Error {
+    registrationEmail?: string;
+}
+
+export function attachRegistrationFailureEmail(error: unknown, email?: string): void {
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (!normalizedEmail || !(error instanceof Error)) {
+    return;
+  }
+  (error as RegistrationFailureError).registrationEmail = normalizedEmail;
+}
+
+export function resolveRegistrationFailureEmail(error: unknown, fallback?: string): string {
+  const normalizedFallback = normalizeEmailAddress(fallback);
+  if (!(error instanceof Error)) {
+    return normalizedFallback;
+  }
+  return normalizeEmailAddress((error as RegistrationFailureError).registrationEmail) || normalizedFallback;
 }
 
 function createBroker() {
@@ -402,7 +423,8 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     : undefined;
   const shouldCancel = () => shouldCancelRegistration(options);
   const emailOtpProvider = options.manualOtp && options.jobId
-    ? async (targetEmail: string, excludeCodes: string[]) => {
+    ? async (targetEmail: string, otpOptions: EmailVerificationCodeOptions) => {
+      const excludeCodes = otpOptions.excludeCodes ?? [];
       const code = await waitForJobInput(options.jobId as number, `请输入 ${targetEmail} 的邮箱验证码`);
       if (excludeCodes.includes(code)) {
         throw new Error(`验证码已使用过: ${code}`);
@@ -412,9 +434,9 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       return code;
     }
     : databaseProvider
-      ? async (targetEmail: string, excludeCodes: string[]) => {
+      ? async (targetEmail: string, otpOptions: EmailVerificationCodeOptions) => {
         const code = await databaseProvider.getEmailVerificationCode(targetEmail, {
-          excludeCodes,
+          ...otpOptions,
           abortSignal: options.abortSignal,
         });
         logEmailOtpCode(targetEmail, code);
@@ -460,6 +482,10 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       console.log(`[授权成功] 邮箱：${client.email} 密码：${password} 授权文件：${result.authFile ?? ""}`);
       await importAuthFileFromResult(result.authFile, password);
       return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
+    } catch (error) {
+      rethrowIfCancellation(error, options);
+      attachRegistrationFailureEmail(error, client.email || email);
+      throw error;
     } finally {
       await client.dispose();
     }
@@ -497,6 +523,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
     } catch (error) {
       rethrowIfCancellation(error, options);
+      attachRegistrationFailureEmail(error, client.email || email);
       await recordAuthFailureEmail(client.email);
       const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
       if (mailbox) {
@@ -525,6 +552,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     await registerClient.authRegisterHTTP();
   } catch (error) {
     rethrowIfCancellation(error, options);
+    attachRegistrationFailureEmail(error, registerClient.email || email);
     await recordAuthFailureEmail(registerClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
@@ -587,6 +615,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     return {email: loginClient.email, ...summarizeSmsBrokerUsage(smsBroker)};
   } catch (error) {
     rethrowIfCancellation(error, options);
+    attachRegistrationFailureEmail(error, loginClient.email || email);
     await recordAuthFailureEmail(loginClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
@@ -698,8 +727,9 @@ async function runRegistrationJobInner(options: RegisterOptions): Promise<Regist
           rethrowIfCancellation(error, options);
           failed += 1;
           const message = error instanceof Error ? error.message : String(error);
-          failedEmails.push(targetEmail || "auto");
-          console.error(`[授权失败] ${targetEmail || "auto"} ${message}`);
+          const failedEmail = resolveRegistrationFailureEmail(error, targetEmail) || "auto";
+          failedEmails.push(failedEmail);
+          console.error(`[授权失败] ${failedEmail} ${message}`);
           return null;
         } finally {
           if (!shouldCancelRegistration(options)) {
@@ -829,10 +859,11 @@ export async function reauthorizeAccount(
       addJobEvent(jobId, "info", `自动重登: 账号未配置邮箱来源，若需要邮箱验证码将无法自动获取`);
     }
   }
-  const emailOtpProvider = async (targetEmail: string, excludeCodes: string[]) => {
+  const emailOtpProvider = async (targetEmail: string, otpOptions: EmailVerificationCodeOptions) => {
+    const excludeCodes = otpOptions.excludeCodes ?? [];
     if (emailCodeProvider) {
       try {
-        const code = await emailCodeProvider.getEmailVerificationCode(targetEmail, {excludeCodes});
+        const code = await emailCodeProvider.getEmailVerificationCode(targetEmail, otpOptions);
         logEmailOtpCode(targetEmail, code);
         if (jobId) {
           addJobEvent(jobId, "info", `邮箱验证码: ${targetEmail} code=${code}`);

@@ -358,6 +358,7 @@ function findLatestVerificationMail(mails, options = {}) {
     })),
     {
       targetEmail: options.targetEmail ?? options.email ?? options.mailbox,
+      minTimestamp: options.minTimestamp,
       candidateMatcher: (mail) => matcher.test(`${mail.subject}\n${mail.content}\n${mail.sender}`),
     },
   );
@@ -502,6 +503,7 @@ async function fetchLatestVerificationCode(options) {
   const sorted = [...mailList.list].sort((a, b) => b.createTime - a.createTime);
   let latestMail = findLatestVerificationMail(sorted, {
     targetEmail: options.targetEmail ?? options.email ?? options.mailbox,
+    minTimestamp: options.minTimestamp,
     matcher,
   });
 
@@ -540,6 +542,7 @@ async function fetchLatestVerificationCode(options) {
         }],
         {
           targetEmail: options.targetEmail ?? options.email ?? options.mailbox,
+          minTimestamp: options.minTimestamp,
           matcher,
         },
       );
@@ -587,6 +590,7 @@ async function fetchLatestVerificationCodeWithSession(targetEmail, options = {})
         nickname: session.nickname,
         deviceUid: session.deviceUid,
         cookie: session.cookie,
+        minTimestamp: options.minTimestamp,
       });
       return result;
     } catch (error) {

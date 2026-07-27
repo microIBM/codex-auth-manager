@@ -158,6 +158,7 @@ async function getLatestVerificationMessage(targetEmail, options = {}) {
 
   return findLatestVerificationMail(details, {
     targetEmail,
+    minTimestamp: options.minTimestamp,
   });
 }
 
