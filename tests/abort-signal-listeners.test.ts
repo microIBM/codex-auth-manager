@@ -8,7 +8,8 @@ process.on("warning", onWarning);
 
 try {
   const controller = new AbortController();
-  const waits = Array.from({length: 20}, () =>
+  const waitCount = 150;
+  const waits = Array.from({length: waitCount}, () =>
     abortableDelay(1000, controller.signal).catch((error) =>
       error instanceof Error ? error.message : String(error),
     ),
@@ -17,7 +18,7 @@ try {
   controller.abort();
 
   const results = await Promise.all(waits);
-  assert.deepEqual(results, Array.from({length: 20}, () => "Job cancelled"));
+  assert.deepEqual(results, Array.from({length: waitCount}, () => "Job cancelled"));
   assert.equal(warnings.some((warning) => warning.name === "MaxListenersExceededWarning"), false);
 } finally {
   process.off("warning", onWarning);

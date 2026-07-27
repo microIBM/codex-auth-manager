@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { setMaxListeners } from "node:events";
 
-const DEFAULT_ABORT_SIGNAL_MAX_LISTENERS = 100;
+const DEFAULT_ABORT_SIGNAL_MAX_LISTENERS = 0;
 
 export function randomUrlSafeString(length: number): string {
   const size = length > 0 ? length : 32;
