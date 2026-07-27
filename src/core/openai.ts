@@ -869,7 +869,11 @@ export class OpenAIClient {
     }
     this.emailOtpRequestedAtMs = requestedAt;
     const payload = (await response.json()) as AuthFlowResponse;
-    return resolveAuthFlowUrl(payload, "PasswordlessOtpSend");
+    const continueURL = resolveAuthFlowUrl(payload, "PasswordlessOtpSend");
+    console.log(
+      `PasswordlessOtpSend: requestedAt=${new Date(requestedAt).toISOString()} pageType=${payload.page?.type ?? "-"} continueURL=${normalizeFlowUrl(continueURL)}`,
+    );
+    return continueURL;
   }
 
   async validatePhone(code: string) {
