@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import {
   attachRegistrationFailureEmail,
   attachRegistrationFailureSmsStats,
+  isAccountDeactivatedRegistrationError,
   resolveRegistrationFailureEmail,
   resolveRegistrationFailureSmsStats,
+  shouldReleaseMailboxAfterRegistrationFailure,
 } from "../src/backend/registration-service.js";
 
 const error = new Error("PasswordVerify request failed");
@@ -41,3 +43,8 @@ assert.deepEqual(resolveRegistrationFailureSmsStats("plain failure"), {
   smsNumbersUsed: 0,
   smsSuccessCount: 0,
 });
+
+const deactivatedError = new Error("EmailOtpValidate请求失败: 403 code=account_deactivated");
+assert.equal(isAccountDeactivatedRegistrationError(deactivatedError), true);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(deactivatedError), false);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("SMSBower getNumber 请求失败: NO_NUMBERS")), true);

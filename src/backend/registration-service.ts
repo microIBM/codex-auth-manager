@@ -135,6 +135,15 @@ function attachRegistrationFailureContext(error: unknown, email?: string, broker
   attachRegistrationFailureSmsStats(error, broker);
 }
 
+export function isAccountDeactivatedRegistrationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\baccount_deactivated\b/i.test(message);
+}
+
+export function shouldReleaseMailboxAfterRegistrationFailure(error: unknown): boolean {
+  return !isAccountDeactivatedRegistrationError(error);
+}
+
 function createBroker() {
   if (appConfig.smsProvider === "grizzly-sms") {
     return appConfig.grizzlySMSApiKey ? createSMSBroker({
@@ -573,7 +582,11 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       await recordAuthFailureEmail(client.email);
       const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
       if (mailbox) {
-        setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
+        setMailboxLastError(
+          mailbox.id,
+          error instanceof Error ? error.message : String(error),
+          shouldReleaseMailboxAfterRegistrationFailure(error),
+        );
       }
       throw error;
     } finally {
@@ -603,7 +616,11 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     await recordAuthFailureEmail(registerClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
-      setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
+      setMailboxLastError(
+        mailbox.id,
+        error instanceof Error ? error.message : String(error),
+        shouldReleaseMailboxAfterRegistrationFailure(error),
+      );
     }
     await registerClient.dispose();
     throw error;
@@ -667,7 +684,11 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     await recordAuthFailureEmail(loginClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
-      setMailboxLastError(mailbox.id, error instanceof Error ? error.message : String(error), true);
+      setMailboxLastError(
+        mailbox.id,
+        error instanceof Error ? error.message : String(error),
+        shouldReleaseMailboxAfterRegistrationFailure(error),
+      );
     }
     throw error;
   } finally {
