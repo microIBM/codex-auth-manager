@@ -4,7 +4,7 @@ import {
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
 } from "undici";
-import {abortableDelay, throwIfAborted} from "../utils.js";
+import {abortableDelay, createLinkedAbortSignal, throwIfAborted} from "../utils.js";
 import type {
   SmsActivation,
   SmsProvider,
@@ -209,14 +209,20 @@ async function requestGrizzlySmsApi(
     setOptionalQuery(url.searchParams, key, value);
   }
 
-  const response = await (config.fetchImpl ?? createDefaultFetch())(url, {
-    method: "GET",
-    signal: options.abortSignal,
-    headers: {
-      Accept: "text/plain, application/json;q=0.9, */*;q=0.8",
-    },
-  });
-  throwIfAborted(options.abortSignal);
+  const linkedAbort = createLinkedAbortSignal(options.abortSignal);
+  let response: GrizzlySmsFetchResponse;
+  try {
+    response = await (config.fetchImpl ?? createDefaultFetch())(url, {
+      method: "GET",
+      signal: linkedAbort.signal,
+      headers: {
+        Accept: "text/plain, application/json;q=0.9, */*;q=0.8",
+      },
+    });
+    throwIfAborted(options.abortSignal);
+  } finally {
+    linkedAbort.cleanup();
+  }
   const payload = (await response.text()).trim();
   if (!response.ok) {
     throw createApiError(config, action, payload, response.status);

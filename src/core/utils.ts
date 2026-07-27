@@ -36,6 +36,36 @@ export function allowManyAbortListeners(
   }
 }
 
+export function createLinkedAbortSignal(abortSignal?: AbortSignal): {
+  signal?: AbortSignal;
+  cleanup: () => void;
+} {
+  throwIfAborted(abortSignal);
+  allowManyAbortListeners(abortSignal);
+  if (!abortSignal) {
+    return {
+      signal: undefined,
+      cleanup: () => undefined,
+    };
+  }
+
+  const controller = new AbortController();
+  const onAbort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+  abortSignal.addEventListener("abort", onAbort, {once: true});
+  if (abortSignal.aborted) {
+    onAbort();
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => abortSignal.removeEventListener("abort", onAbort),
+  };
+}
+
 export function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
   throwIfAborted(abortSignal);
   allowManyAbortListeners(abortSignal);

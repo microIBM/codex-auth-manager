@@ -80,7 +80,8 @@ try {
     },
     fetchImpl: async (input, init) => {
       abortRequests.push(new URL(String(input)));
-      assert.equal(init?.signal, abortController.signal);
+      assert.notEqual(init?.signal, abortController.signal);
+      assert.equal(init?.signal?.aborted, abortController.signal.aborted);
       return new Response("STATUS_WAIT_CODE");
     },
   });

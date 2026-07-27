@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {abortableDelay} from "../src/core/utils.js";
+import {abortableDelay, createLinkedAbortSignal} from "../src/core/utils.js";
 
 const warnings: Error[] = [];
 const onWarning = (warning: Error) => warnings.push(warning);
@@ -19,6 +19,13 @@ try {
 
   const results = await Promise.all(waits);
   assert.deepEqual(results, Array.from({length: waitCount}, () => "Job cancelled"));
+
+  const linkedController = new AbortController();
+  for (let index = 0; index < waitCount; index += 1) {
+    const linked = createLinkedAbortSignal(linkedController.signal);
+    assert.equal(linked.signal?.aborted, false);
+    linked.cleanup();
+  }
   assert.equal(warnings.some((warning) => warning.name === "MaxListenersExceededWarning"), false);
 } finally {
   process.off("warning", onWarning);
