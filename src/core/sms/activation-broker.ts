@@ -105,6 +105,11 @@ function getActivationAgeMs(createdAt?: Date): number | null {
   return Date.now() - timestamp;
 }
 
+function isBadStatusError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bBAD_STATUS\b/.test(message);
+}
+
 export class ActivationBroker<
   Activation extends SmsActivation = SmsActivation,
   Verification extends SmsVerificationCode = SmsVerificationCode,
@@ -187,9 +192,24 @@ export class ActivationBroker<
         `[pollSMSCode] 复用号码[+${this.currentActivation.phoneNumber}]，第 ${(this.usage?.finishedAttemptCount ?? 0) + 1} 次， round=${this.round + 1}`,
       );
 
-      await this.provider.requestAnotherSms(
-        this.currentActivation.activationId,
-      );
+      if ((this.usage?.successCount ?? 0) > 0) {
+        try {
+          await this.provider.requestAnotherSms(
+            this.currentActivation.activationId,
+          );
+        } catch (error) {
+          if (!isBadStatusError(error)) {
+            throw error;
+          }
+          console.warn(
+            `[pollSMSCode] 短信平台拒绝 setStatus=3(BAD_STATUS)，继续复用同一号码 phone=+${this.currentActivation.phoneNumber} activationId=${this.currentActivation.activationId}`,
+          );
+        }
+      } else {
+        console.log(
+          `[pollSMSCode] 上一轮未收到验证码，跳过平台 setStatus=3，继续复用同一号码 phone=+${this.currentActivation.phoneNumber}`,
+        );
+      }
       this.needsAnotherSms = false;
       this.round += 1;
       requestedAnotherSms = true;

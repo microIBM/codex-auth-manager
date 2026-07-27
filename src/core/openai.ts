@@ -45,9 +45,16 @@ const SMS_NUMBER_ACQUIRE_INTERVAL_MS = 1000;
 const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
 const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
 const EMAIL_OTP_TIMESTAMP_SKEW_MS = 10_000;
+const DEFAULT_SMS_POLL_ATTEMPTS = 10;
+const DEFAULT_SMS_MAX_SENDS_PER_PHONE = 1;
 
 function resolveProxyUrl(): string {
   return resolveOpenAIProxyUrl();
+}
+
+function normalizePositiveIntegerOption(value: unknown, fallback: number): number {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function formatCommandAuthDirName(date: Date): string {
@@ -236,6 +243,8 @@ export interface OpenAIClientOptions {
   progressCallback?: (step: number | string, total: number, message: string) => void;
   signupScreenHint?: string;
   smsBroker?: ISMSActivationBroker;
+  smsPollAttempts?: number;
+  smsMaxSendsPerPhone?: number;
   smsVerificationDisabled?: boolean;
   shouldCancel?: () => boolean;
   abortSignal?: AbortSignal;
@@ -265,6 +274,8 @@ export class OpenAIClient {
   codeVerifier = "";
   deviceID = "";
   readonly smsBroker?: ISMSActivationBroker;
+  readonly smsPollAttempts: number;
+  readonly smsMaxSendsPerPhone: number;
   readonly smsVerificationDisabled: boolean;
   readonly shouldCancel?: () => boolean;
   private readonly abortController: AbortController;
@@ -278,6 +289,14 @@ export class OpenAIClient {
 
   constructor(options: OpenAIClientOptions) {
     this.smsBroker = options.smsBroker;
+    this.smsPollAttempts = normalizePositiveIntegerOption(
+      options.smsPollAttempts,
+      DEFAULT_SMS_POLL_ATTEMPTS,
+    );
+    this.smsMaxSendsPerPhone = normalizePositiveIntegerOption(
+      options.smsMaxSendsPerPhone,
+      DEFAULT_SMS_MAX_SENDS_PER_PHONE,
+    );
     this.smsVerificationDisabled = Boolean(options.smsVerificationDisabled);
     this.shouldCancel = options.shouldCancel;
     this.abortController = new AbortController();
@@ -1046,11 +1065,14 @@ export class OpenAIClient {
       throw new Error("未配置 SMS provider，无法进行短信验证");
     }
     const MAX_PHONES = 5;
-    const POLLS_PER_PHONE = 20;
-    const MAX_SENDS_PER_PHONE = 2;
+    const POLLS_PER_PHONE = this.smsPollAttempts;
+    const MAX_SENDS_PER_PHONE = this.smsMaxSendsPerPhone;
     const MAX_SUBMIT_RETRY = 3;
 
     let lastError: Error | null = null;
+    console.log(
+      `[SMS] 短信策略: 最多 ${MAX_PHONES} 个号码，单号最多发送 ${MAX_SENDS_PER_PHONE} 次，每次轮询 ${POLLS_PER_PHONE} 次`,
+    );
 
     for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
       this.throwIfCancelled();

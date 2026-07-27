@@ -39,6 +39,7 @@ interface AppConfigInput {
   smsBowerMaxPrice?: unknown;
   smsBowerPollAttempts?: unknown;
   smsBowerPollIntervalMs?: unknown;
+  smsMaxSendsPerPhone?: unknown;
   cliproxyApiAutoUploadAuth?: unknown;
   cliproxyApiBaseUrl?: unknown;
   cliproxyApiManagementKey?: unknown;
@@ -93,6 +94,7 @@ export interface AppConfig {
   smsBowerMaxPrice: number;
   smsBowerPollAttempts: number;
   smsBowerPollIntervalMs: number;
+  smsMaxSendsPerPhone: number;
   cliproxyApiAutoUploadAuth: boolean;
   cliproxyApiBaseUrl: string;
   cliproxyApiManagementKey: string;
@@ -147,6 +149,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   smsBowerMaxPrice: 0.1,
   smsBowerPollAttempts: 10,
   smsBowerPollIntervalMs: 3000,
+  smsMaxSendsPerPhone: 1,
   cliproxyApiAutoUploadAuth: false,
   cliproxyApiBaseUrl: "http://localhost:8317",
   cliproxyApiManagementKey: "",
@@ -222,6 +225,10 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
     return fallback;
   }
   return Math.max(1, parsed);
+}
+
+function normalizeBoundedPositiveInteger(value: unknown, fallback: number, max: number): number {
+  return Math.min(max, normalizePositiveInteger(value, fallback));
 }
 
 function normalizeOptionalNumber(value: unknown): number | null {
@@ -346,6 +353,11 @@ function normalizeConfig(parsed: AppConfigInput): AppConfig {
     smsBowerPollIntervalMs: normalizeNumber(
       parsed.smsBowerPollIntervalMs,
       DEFAULT_CONFIG.smsBowerPollIntervalMs,
+    ),
+    smsMaxSendsPerPhone: normalizeBoundedPositiveInteger(
+      parsed.smsMaxSendsPerPhone,
+      DEFAULT_CONFIG.smsMaxSendsPerPhone,
+      3,
     ),
     cliproxyApiAutoUploadAuth: normalizeBoolean(
       parsed.cliproxyApiAutoUploadAuth,

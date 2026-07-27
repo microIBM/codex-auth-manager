@@ -9,6 +9,7 @@ assert.equal(DEFAULT_CONFIG.smsBowerCountry, 7);
 assert.equal(DEFAULT_CONFIG.smsBowerMaxPrice, 0.1);
 assert.equal(DEFAULT_CONFIG.smsBowerPollAttempts, 10);
 assert.equal(DEFAULT_CONFIG.smsBowerPollIntervalMs, 3000);
+assert.equal(DEFAULT_CONFIG.smsMaxSendsPerPhone, 1);
 assert.equal(SECRET_CONFIG_KEYS.has("smsBowerApiKey"), true);
 assert.equal(DEFAULT_CONFIG.residentialProxyEnabled, false);
 assert.equal(DEFAULT_CONFIG.residentialProxyUrl, "");

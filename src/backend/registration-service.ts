@@ -90,6 +90,8 @@ interface SingleRegistrationResult {
 
 interface RegistrationFailureError extends Error {
     registrationEmail?: string;
+    registrationSmsNumbersUsed?: number;
+    registrationSmsSuccessCount?: number;
 }
 
 export function attachRegistrationFailureEmail(error: unknown, email?: string): void {
@@ -106,6 +108,31 @@ export function resolveRegistrationFailureEmail(error: unknown, fallback?: strin
     return normalizedFallback;
   }
   return normalizeEmailAddress((error as RegistrationFailureError).registrationEmail) || normalizedFallback;
+}
+
+export function attachRegistrationFailureSmsStats(error: unknown, broker: unknown): void {
+  if (!(error instanceof Error)) {
+    return;
+  }
+  const summary = summarizeSmsBrokerUsage(broker);
+  (error as RegistrationFailureError).registrationSmsNumbersUsed = summary.smsNumbersUsed;
+  (error as RegistrationFailureError).registrationSmsSuccessCount = summary.smsSuccessCount;
+}
+
+export function resolveRegistrationFailureSmsStats(error: unknown): {smsNumbersUsed: number; smsSuccessCount: number} {
+  if (!(error instanceof Error)) {
+    return {smsNumbersUsed: 0, smsSuccessCount: 0};
+  }
+  const metadata = error as RegistrationFailureError;
+  return {
+    smsNumbersUsed: Number(metadata.registrationSmsNumbersUsed ?? 0),
+    smsSuccessCount: Number(metadata.registrationSmsSuccessCount ?? 0),
+  };
+}
+
+function attachRegistrationFailureContext(error: unknown, email?: string, broker?: unknown): void {
+  attachRegistrationFailureEmail(error, email);
+  attachRegistrationFailureSmsStats(error, broker);
 }
 
 function createBroker() {
@@ -159,6 +186,23 @@ function createBrokerForRegistration(options: RegisterOptions) {
     return undefined;
   }
   return createBroker();
+}
+
+function getSelectedSmsPollAttempts(): number {
+  if (appConfig.smsProvider === "grizzly-sms") {
+    return appConfig.grizzlySMSPollAttempts;
+  }
+  if (appConfig.smsProvider === "smsbower") {
+    return appConfig.smsBowerPollAttempts;
+  }
+  return appConfig.heroSMSPollAttempts;
+}
+
+function getSmsRuntimeOptions() {
+  return {
+    smsPollAttempts: getSelectedSmsPollAttempts(),
+    smsMaxSendsPerPhone: appConfig.smsMaxSendsPerPhone,
+  };
 }
 
 function summarizeSmsBrokerUsage(broker: unknown): {smsNumbersUsed: number; smsSuccessCount: number} {
@@ -473,6 +517,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       emailOtpProvider,
       progressCallback,
       smsBroker,
+      ...getSmsRuntimeOptions(),
       smsVerificationDisabled: !smsVerificationEnabled,
       shouldCancel,
       abortSignal: options.abortSignal,
@@ -484,7 +529,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
     } catch (error) {
       rethrowIfCancellation(error, options);
-      attachRegistrationFailureEmail(error, client.email || email);
+      attachRegistrationFailureContext(error, client.email || email, smsBroker);
       throw error;
     } finally {
       await client.dispose();
@@ -502,6 +547,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       progressCallback,
       signupScreenHint: "signup",
       smsBroker,
+      ...getSmsRuntimeOptions(),
       smsVerificationDisabled: !smsVerificationEnabled,
       shouldCancel,
       abortSignal: options.abortSignal,
@@ -523,7 +569,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
       return {email: client.email, ...summarizeSmsBrokerUsage(smsBroker)};
     } catch (error) {
       rethrowIfCancellation(error, options);
-      attachRegistrationFailureEmail(error, client.email || email);
+      attachRegistrationFailureContext(error, client.email || email, smsBroker);
       await recordAuthFailureEmail(client.email);
       const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
       if (mailbox) {
@@ -543,6 +589,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     emailOtpProvider,
     progressCallback,
     smsBroker,
+    ...getSmsRuntimeOptions(),
     smsVerificationDisabled: !smsVerificationEnabled,
     shouldCancel,
     abortSignal: options.abortSignal,
@@ -552,7 +599,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     await registerClient.authRegisterHTTP();
   } catch (error) {
     rethrowIfCancellation(error, options);
-    attachRegistrationFailureEmail(error, registerClient.email || email);
+    attachRegistrationFailureContext(error, registerClient.email || email, smsBroker);
     await recordAuthFailureEmail(registerClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
@@ -593,6 +640,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     progressCallback,
     emailOtpProvider,
     smsBroker,
+    ...getSmsRuntimeOptions(),
     smsVerificationDisabled: !smsVerificationEnabled,
     shouldCancel,
     abortSignal: options.abortSignal,
@@ -615,7 +663,7 @@ async function runSingleRegistrationInner(options: RegisterOptions, email?: stri
     return {email: loginClient.email, ...summarizeSmsBrokerUsage(smsBroker)};
   } catch (error) {
     rethrowIfCancellation(error, options);
-    attachRegistrationFailureEmail(error, loginClient.email || email);
+    attachRegistrationFailureContext(error, loginClient.email || email, smsBroker);
     await recordAuthFailureEmail(loginClient.email);
     const mailbox = databaseProvider?.consumeReservedMailbox() ?? null;
     if (mailbox) {
@@ -728,6 +776,9 @@ async function runRegistrationJobInner(options: RegisterOptions): Promise<Regist
           failed += 1;
           const message = error instanceof Error ? error.message : String(error);
           const failedEmail = resolveRegistrationFailureEmail(error, targetEmail) || "auto";
+          const smsSummary = resolveRegistrationFailureSmsStats(error);
+          smsNumbersUsed += smsSummary.smsNumbersUsed;
+          smsSuccessCount += smsSummary.smsSuccessCount;
           failedEmails.push(failedEmail);
           console.error(`[授权失败] ${failedEmail} ${message}`);
           return null;
@@ -905,6 +956,7 @@ export async function reauthorizeAccount(
       }
       : undefined,
     smsBroker: mode === "auto" ? undefined : createBroker(),
+    ...getSmsRuntimeOptions(),
     smsVerificationDisabled: mode === "auto",
     shouldCancel: () => jobId ? isJobCancellationRequested(jobId) : false,
   });

@@ -479,6 +479,10 @@ onMounted(load);
               </el-col>
             </el-row>
             <el-form-item label="轮询间隔 ms"><el-input-number v-model="config[smsPollIntervalConfigKey]" :min="1000" class="w-full" /></el-form-item>
+            <el-form-item label="同号最大发送次数">
+              <el-input-number v-model="config.smsMaxSendsPerPhone" :min="1" :max="3" class="w-full" />
+              <div class="mt-1 text-xs text-[var(--el-text-color-secondary)]">批量注册建议 1；设置为 2 或 3 时会在同一号码上重发短信后继续等待。</div>
+            </el-form-item>
             <div class="rounded-lg border border-[var(--el-border-color-light)]">
               <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--el-border-color-light)] px-3 py-2">
                 <div>
