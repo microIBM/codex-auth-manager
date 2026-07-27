@@ -3,6 +3,7 @@ import {
   attachRegistrationFailureEmail,
   attachRegistrationFailureSmsStats,
   isAccountDeactivatedRegistrationError,
+  isPermanentRegistrationMailboxFailure,
   resolveRegistrationFailureEmail,
   resolveRegistrationFailureSmsStats,
   shouldReleaseMailboxAfterRegistrationFailure,
@@ -46,5 +47,15 @@ assert.deepEqual(resolveRegistrationFailureSmsStats("plain failure"), {
 
 const deactivatedError = new Error("EmailOtpValidate请求失败: 403 code=account_deactivated");
 assert.equal(isAccountDeactivatedRegistrationError(deactivatedError), true);
+assert.equal(isPermanentRegistrationMailboxFailure(deactivatedError), true);
 assert.equal(shouldReleaseMailboxAfterRegistrationFailure(deactivatedError), false);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("EmailOtpSend请求失败: 400 code=email_domain_blocked")), false);
+assert.equal(
+  shouldReleaseMailboxAfterRegistrationFailure(new Error('CreateAccount请求失败: 400 {"error":{"code":"disposable_email_not_allowed"}}')),
+  false,
+);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("OpenAI returned: account has been suspended")), false);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("AuthorizeContinue注册请求失败: 400 code=user_already_exists")), true);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("PasswordVerify请求失败: 401 code=invalid_username_or_password")), true);
+assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("EmailOtpValidate请求失败: 401 code=wrong_email_otp_code")), true);
 assert.equal(shouldReleaseMailboxAfterRegistrationFailure(new Error("SMSBower getNumber 请求失败: NO_NUMBERS")), true);

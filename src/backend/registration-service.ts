@@ -135,13 +135,63 @@ function attachRegistrationFailureContext(error: unknown, email?: string, broker
   attachRegistrationFailureSmsStats(error, broker);
 }
 
+const PERMANENT_REGISTRATION_ERROR_CODES = new Set([
+  "account_deactivated",
+  "account_disabled",
+  "account_suspended",
+  "account_terminated",
+  "account_deleted",
+  "account_locked",
+  "user_deactivated",
+  "user_disabled",
+  "user_suspended",
+  "user_terminated",
+  "user_deleted",
+  "user_banned",
+  "user_locked",
+  "invalid_email",
+  "invalid_email_address",
+  "invalid_email_domain",
+  "unsupported_email_domain",
+  "email_domain_blocked",
+  "email_domain_not_allowed",
+  "email_provider_blocked",
+  "blocked_email_domain",
+  "disposable_email_not_allowed",
+  "disposable_email_domain",
+]);
+
+function normalizeRegistrationErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "");
+}
+
+function extractRegistrationErrorCodes(message: string): string[] {
+  return Array.from(message.matchAll(/["']?\bcode["']?\s*[:=]\s*["']?([a-z0-9_.-]+)/gi), (match) => match[1].toLowerCase());
+}
+
+function hasPermanentRegistrationErrorText(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return [
+    /\b(?:account|user)\s+(?:has\s+been\s+)?(?:deactivated|disabled|suspended|terminated|deleted|banned|locked)\b/,
+    /\bemail\s+domain\s+(?:is\s+)?(?:blocked|disabled|not\s+allowed|unsupported|invalid)\b/,
+    /\b(?:disposable|temporary)\s+email\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 export function isAccountDeactivatedRegistrationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
+  const message = normalizeRegistrationErrorMessage(error);
   return /\baccount_deactivated\b/i.test(message);
 }
 
+export function isPermanentRegistrationMailboxFailure(error: unknown): boolean {
+  const message = normalizeRegistrationErrorMessage(error);
+  const codes = extractRegistrationErrorCodes(message);
+  return codes.some((code) => PERMANENT_REGISTRATION_ERROR_CODES.has(code)) ||
+    hasPermanentRegistrationErrorText(message);
+}
+
 export function shouldReleaseMailboxAfterRegistrationFailure(error: unknown): boolean {
-  return !isAccountDeactivatedRegistrationError(error);
+  return !isPermanentRegistrationMailboxFailure(error);
 }
 
 function createBroker() {
