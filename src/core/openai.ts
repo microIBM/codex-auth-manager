@@ -6,7 +6,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { URLSearchParams } from "node:url";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { fetch as undiciFetch, Headers, Response, setGlobalDispatcher } from "undici";
+import { fetch as undiciFetch, Headers, Response, type Dispatcher } from "undici";
 import makeFetchCookie from "fetch-cookie";
 import { CookieJar } from "tough-cookie";
 import { pickResidentialProxyUrl } from "./config.js";
@@ -268,6 +268,7 @@ export class OpenAIClient {
   readonly clientHints: ReturnType<typeof getDeviceClientHints>;
   readonly signupScreenHint: string;
   readonly proxyUrl: string;
+  private readonly dispatcher: Dispatcher;
   readonly emailAddressProvider?: () => Promise<string>;
   readonly emailOtpProvider?: (email: string, options: EmailVerificationCodeOptions) => Promise<string>;
   readonly progressCallback?: (step: number | string, total: number, message: string) => void;
@@ -333,8 +334,8 @@ export class OpenAIClient {
     this.progressCallback = options.progressCallback;
     this.signupScreenHint = options.signupScreenHint?.trim() || "login_or_signup";
     this.proxyUrl = resolveProxyUrl();
+    this.dispatcher = createProxyDispatcher(this.proxyUrl, DEFAULT_INSECURE_TLS);
     this.jar = new CookieJar();
-    setGlobalDispatcher(createProxyDispatcher(this.proxyUrl, DEFAULT_INSECURE_TLS));
     const cookieFetch = makeFetchCookie(undiciFetch as unknown as FetchLike, this.jar) as FetchLike;
     this.fetch = ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) =>
       this.fetchWithRetry(cookieFetch, input, init)) as FetchLike;
@@ -1767,6 +1768,7 @@ export class OpenAIClient {
         const initWithAbort = {
           ...(init ?? {}),
           signal: this.abortController.signal,
+          dispatcher: this.dispatcher,
         };
         if (this.browserTransportEnabled) {
           try {

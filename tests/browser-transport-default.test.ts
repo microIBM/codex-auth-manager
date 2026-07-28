@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import {Agent, getGlobalDispatcher, setGlobalDispatcher} from "undici";
 import { OpenAIClient } from "../src/core/openai.js";
 
 const prototype = OpenAIClient.prototype as unknown as Record<string, unknown>;
 const originalResolveBrowserExecutablePath = prototype.resolveBrowserExecutablePath;
 const originalEnvValue = process.env.OPENAI_BROWSER_TRANSPORT;
+const originalGlobalDispatcher = getGlobalDispatcher();
+const testGlobalDispatcher = new Agent();
 
 try {
+  setGlobalDispatcher(testGlobalDispatcher);
   prototype.resolveBrowserExecutablePath = () => "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
   delete process.env.OPENAI_BROWSER_TRANSPORT;
 
@@ -19,6 +23,7 @@ try {
     (defaultClient as unknown as { browserTransportEnabled: boolean }).browserTransportEnabled,
     false,
   );
+  assert.equal(getGlobalDispatcher(), testGlobalDispatcher);
 
   process.env.OPENAI_BROWSER_TRANSPORT = "1";
 
@@ -32,7 +37,12 @@ try {
     (enabledClient as unknown as { browserTransportEnabled: boolean }).browserTransportEnabled,
     true,
   );
+  assert.equal(getGlobalDispatcher(), testGlobalDispatcher);
+  await defaultClient.dispose();
+  await enabledClient.dispose();
 } finally {
+  setGlobalDispatcher(originalGlobalDispatcher);
+  await testGlobalDispatcher.close();
   if (typeof originalResolveBrowserExecutablePath === "function") {
     prototype.resolveBrowserExecutablePath = originalResolveBrowserExecutablePath;
   } else {
