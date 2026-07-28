@@ -366,16 +366,16 @@ onMounted(load);
               <el-form-item label="住宅代理 URL" class="mb-0">
                 <el-input
                   v-model="secretInputs.residentialProxyUrl"
-                  type="password"
-                  show-password
-                  placeholder="http://user:pass@host:port 或 socks5h://user:pass@host:port"
+                  type="textarea"
+                  :autosize="{minRows: 3, maxRows: 6}"
+                  placeholder="每行一个 URL；例如：http://user:pass@host:port 或 socks5h://user:pass@host:port"
                 >
                   <template #append>
                     <el-button :icon="Connection" :loading="testingResidentialProxy" @click="testResidentialProxy">测试</el-button>
                   </template>
                 </el-input>
                 <div class="mt-1 text-xs text-[var(--el-text-color-secondary)]">
-                  {{ secretPlaceholder("residentialProxyUrl") }}；支持 http/https/socks4/socks5/socks5h。
+                  {{ secretPlaceholder("residentialProxyUrl") }}；支持 http/https/socks4/socks5/socks5h。可填写多行 URL，注册时会随机抽取一个。
                 </div>
                 <div v-if="residentialProxyTestResult" class="mt-2 w-full rounded-lg border px-3 py-2 text-sm" :class="residentialProxyTestResult.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'">
                   <div class="font-medium">{{ residentialProxyTestResult.message }}</div>

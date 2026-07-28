@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {DEFAULT_CONFIG, SECRET_CONFIG_KEYS, resolveOpenAIProxyUrl, type SmsProviderName} from "../src/core/config.js";
+import { DEFAULT_CONFIG, SECRET_CONFIG_KEYS, resolveOpenAIProxyUrl, type SmsProviderName } from "../src/core/config.js";
 
 const provider: SmsProviderName = "smsbower";
 
@@ -31,4 +31,22 @@ assert.equal(
     residentialProxyUrl: "",
   }),
   "http://default-proxy:10808",
+);
+assert.equal(
+  resolveOpenAIProxyUrl({
+    ...DEFAULT_CONFIG,
+    defaultProxyUrl: "http://default-proxy:10808",
+    residentialProxyEnabled: true,
+    residentialProxyUrl: "http://home-a:8000\nhttp://home-b:8000",
+  }, () => 0.25),
+  "http://home-a:8000",
+);
+assert.equal(
+  resolveOpenAIProxyUrl({
+    ...DEFAULT_CONFIG,
+    defaultProxyUrl: "http://default-proxy:10808",
+    residentialProxyEnabled: true,
+    residentialProxyUrl: "http://home-a:8000\nhttp://home-b:8000",
+  }, () => 0.99),
+  "http://home-b:8000",
 );

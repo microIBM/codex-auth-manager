@@ -1,5 +1,5 @@
-import {getDb, currentTimestamp} from "../backend/db.js";
-import {decryptSecretSync, encryptSecretSync} from "../backend/crypto.js";
+import { getDb, currentTimestamp } from "../backend/db.js";
+import { decryptSecretSync, encryptSecretSync } from "../backend/crypto.js";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
 export type HotmailMode = "graph" | "xiongmaodian";
@@ -187,14 +187,14 @@ export const SECRET_CONFIG_KEYS = new Set<keyof AppConfig>([
 ]);
 
 interface AppSettingRow {
-    key: string;
-    value_json: string;
-    is_secret: number;
+  key: string;
+  value_json: string;
+  is_secret: number;
 }
 
-const LEGACY_DEFAULT_OVERRIDES: Partial<Record<keyof AppConfig, {from: unknown; to: unknown}>> = {
-  heroSMSCountry: {from: 52, to: DEFAULT_CONFIG.heroSMSCountry},
-  heroSMSMaxPrice: {from: 0.05, to: DEFAULT_CONFIG.heroSMSMaxPrice},
+const LEGACY_DEFAULT_OVERRIDES: Partial<Record<keyof AppConfig, { from: unknown; to: unknown }>> = {
+  heroSMSCountry: { from: 52, to: DEFAULT_CONFIG.heroSMSCountry },
+  heroSMSMaxPrice: { from: 0.05, to: DEFAULT_CONFIG.heroSMSMaxPrice },
 };
 
 export function getConfigKeys(): Array<keyof AppConfig> {
@@ -436,7 +436,7 @@ function saveSetting(key: keyof AppConfig, value: unknown): void {
 function seedDefaultSettings(): void {
   const statement = getDb().prepare("SELECT key FROM app_settings WHERE key = ?");
   for (const key of getConfigKeys()) {
-    const existing = statement.get(key) as {key: string} | undefined;
+    const existing = statement.get(key) as { key: string } | undefined;
     if (!existing) {
       saveSetting(key, DEFAULT_CONFIG[key]);
     }
@@ -445,7 +445,7 @@ function seedDefaultSettings(): void {
 
 function migrateLegacyDefaultSettings(): void {
   const statement = getDb().prepare("SELECT key, value_json, is_secret FROM app_settings WHERE key = ?");
-  for (const [key, override] of Object.entries(LEGACY_DEFAULT_OVERRIDES) as Array<[keyof AppConfig, {from: unknown; to: unknown}]>) {
+  for (const [key, override] of Object.entries(LEGACY_DEFAULT_OVERRIDES) as Array<[keyof AppConfig, { from: unknown; to: unknown }]>) {
     const row = statement.get(key) as AppSettingRow | undefined;
     if (!row || row.is_secret) {
       continue;
@@ -497,10 +497,33 @@ export function reloadAppConfig(): AppConfig {
   return appConfig;
 }
 
-export function resolveOpenAIProxyUrl(config: Pick<AppConfig, "defaultProxyUrl" | "residentialProxyEnabled" | "residentialProxyUrl"> = appConfig): string {
+export function parseProxyUrlCandidates(value: string | undefined): string[] {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    return [];
+  }
+  return trimmed
+    .split(/\r?\n|[;,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function resolveOpenAIProxyUrl(
+  config: Pick<AppConfig, "defaultProxyUrl" | "residentialProxyEnabled" | "residentialProxyUrl"> = appConfig,
+  random = Math.random,
+): string {
   const residentialProxyUrl = String(config.residentialProxyUrl ?? "").trim();
   if (config.residentialProxyEnabled && residentialProxyUrl) {
-    return residentialProxyUrl;
+    const candidates = parseProxyUrlCandidates(residentialProxyUrl);
+    if (candidates.length > 1) {
+      const index = Math.floor(random() * candidates.length);
+      return candidates[index] ?? candidates[0] ?? "";
+    }
+    return candidates[0] ?? "";
   }
   return String(config.defaultProxyUrl ?? "").trim();
+}
+
+export function pickResidentialProxyUrl(config: Pick<AppConfig, "defaultProxyUrl" | "residentialProxyEnabled" | "residentialProxyUrl"> = appConfig): string {
+  return resolveOpenAIProxyUrl(config);
 }

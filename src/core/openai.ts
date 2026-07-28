@@ -9,7 +9,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { fetch as undiciFetch, Headers, Response, setGlobalDispatcher } from "undici";
 import makeFetchCookie from "fetch-cookie";
 import { CookieJar } from "tough-cookie";
-import { resolveOpenAIProxyUrl } from "./config.js";
+import { pickResidentialProxyUrl } from "./config.js";
 import { shouldAutoUploadAuthToCLIProxyAPI, uploadAuthFileToCLIProxyAPI } from "./cliproxyapi.js";
 import { shouldAutoUploadAuthToSub2API, uploadAuthFileToSub2API } from "./sub2api.js";
 import { buildBrowserHeaders, defaultDeviceProfile, type DeviceProfile, getDeviceClientHints } from "./device-profile.js";
@@ -30,7 +30,7 @@ import {
   DEFAULT_USER_AGENT,
 } from "./constants.js";
 import { getEmailAddress, getEmailVerificationCode, MAILBOX_CONFIG } from "./mailbox.js";
-import type {EmailVerificationCodeOptions} from "./mailbox.js";
+import type { EmailVerificationCodeOptions } from "./mailbox.js";
 import { fetchSentinelToken, type SentinelFetch } from "./sentinel.js";
 import { allowManyAbortListeners, pkceCodeChallenge, randomUrlSafeString } from "./utils.js";
 import { createProxyDispatcher, normalizeBrowserProxyUrl } from "./proxy.js";
@@ -49,7 +49,7 @@ const DEFAULT_SMS_POLL_ATTEMPTS = 10;
 const DEFAULT_SMS_MAX_SENDS_PER_PHONE = 1;
 
 function resolveProxyUrl(): string {
-  return resolveOpenAIProxyUrl();
+  return pickResidentialProxyUrl();
 }
 
 function normalizePositiveIntegerOption(value: unknown, fallback: number): number {
@@ -267,6 +267,7 @@ export class OpenAIClient {
   readonly deviceProfile: DeviceProfile;
   readonly clientHints: ReturnType<typeof getDeviceClientHints>;
   readonly signupScreenHint: string;
+  readonly proxyUrl: string;
   readonly emailAddressProvider?: () => Promise<string>;
   readonly emailOtpProvider?: (email: string, options: EmailVerificationCodeOptions) => Promise<string>;
   readonly progressCallback?: (step: number | string, total: number, message: string) => void;
@@ -307,7 +308,7 @@ export class OpenAIClient {
       if (options.abortSignal.aborted) {
         abort();
       } else {
-        options.abortSignal.addEventListener("abort", abort, {once: true});
+        options.abortSignal.addEventListener("abort", abort, { once: true });
         this.detachExternalAbortSignal = () => options.abortSignal?.removeEventListener("abort", abort);
       }
     }
@@ -331,8 +332,9 @@ export class OpenAIClient {
     this.emailOtpProvider = options.emailOtpProvider;
     this.progressCallback = options.progressCallback;
     this.signupScreenHint = options.signupScreenHint?.trim() || "login_or_signup";
+    this.proxyUrl = resolveProxyUrl();
     this.jar = new CookieJar();
-    setGlobalDispatcher(createProxyDispatcher(resolveProxyUrl(), DEFAULT_INSECURE_TLS));
+    setGlobalDispatcher(createProxyDispatcher(this.proxyUrl, DEFAULT_INSECURE_TLS));
     const cookieFetch = makeFetchCookie(undiciFetch as unknown as FetchLike, this.jar) as FetchLike;
     this.fetch = ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) =>
       this.fetchWithRetry(cookieFetch, input, init)) as FetchLike;
@@ -400,7 +402,7 @@ export class OpenAIClient {
         reject(this.createCancellationError());
       };
 
-      signal.addEventListener("abort", onAbort, {once: true});
+      signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) {
         onAbort();
       }
@@ -1919,7 +1921,7 @@ export class OpenAIClient {
     if (!executablePath) {
       throw new Error("未找到可用于浏览器传输的浏览器安装路径");
     }
-    const proxyUrl = normalizeBrowserProxyUrl(resolveProxyUrl());
+    const proxyUrl = normalizeBrowserProxyUrl(this.proxyUrl);
     return chromium.launch({
       headless: true,
       executablePath,

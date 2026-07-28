@@ -1,6 +1,6 @@
-import {fetch as undiciFetch, type RequestInit as UndiciRequestInit} from "undici";
-import {appConfig, resolveOpenAIProxyUrl} from "../core/config.js";
-import {createProxyDispatcher, maskProxyUrl} from "../core/proxy.js";
+import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
+import { appConfig, parseProxyUrlCandidates, resolveOpenAIProxyUrl } from "../core/config.js";
+import { createProxyDispatcher, maskProxyUrl } from "../core/proxy.js";
 
 const DEFAULT_TEST_URL = "https://chatgpt.com/cdn-cgi/trace";
 const PROXY_TEST_TIMEOUT_MS = 10000;
@@ -33,16 +33,16 @@ function normalizeProxyKind(value: unknown): ProxyTestKind {
   return value === "residential" ? "residential" : "default";
 }
 
-function resolveTestProxyUrl(input: {proxyUrl?: unknown; proxyKind?: unknown}): {proxyKind: ProxyTestKind; proxyUrl: string} {
-  const proxyUrl = typeof input.proxyUrl === "string" ? input.proxyUrl.trim() : "";
+function resolveTestProxyUrl(input: { proxyUrl?: unknown; proxyKind?: unknown }): { proxyKind: ProxyTestKind; proxyUrl: string } {
+  const rawProxyUrl = typeof input.proxyUrl === "string" ? input.proxyUrl.trim() : "";
   const proxyKind = normalizeProxyKind(input.proxyKind);
-  if (proxyUrl) {
-    return {proxyKind, proxyUrl};
+  if (rawProxyUrl) {
+    return { proxyKind, proxyUrl: parseProxyUrlCandidates(rawProxyUrl)[0] ?? "" };
   }
   if (proxyKind === "residential") {
-    return {proxyKind, proxyUrl: String(appConfig.residentialProxyUrl ?? "").trim()};
+    return { proxyKind, proxyUrl: parseProxyUrlCandidates(appConfig.residentialProxyUrl)[0] ?? "" };
   }
-  return {proxyKind, proxyUrl: resolveOpenAIProxyUrl()};
+  return { proxyKind, proxyUrl: resolveOpenAIProxyUrl() };
 }
 
 function parseTraceValue(rawBody: string, key: string): string | undefined {
@@ -60,7 +60,7 @@ function parseExitIp(rawBody: string): string | undefined {
     return traceIp;
   }
   try {
-    const payload = JSON.parse(rawBody) as {ip?: unknown};
+    const payload = JSON.parse(rawBody) as { ip?: unknown };
     return typeof payload.ip === "string" ? payload.ip : undefined;
   } catch {
     return undefined;
@@ -73,16 +73,16 @@ function formatErrorMessage(error: unknown): string {
   }
   const cause = error.cause;
   const causeMessage = cause && typeof cause === "object" && "message" in cause
-    ? String((cause as {message?: unknown}).message ?? "")
+    ? String((cause as { message?: unknown }).message ?? "")
     : "";
   const causeCode = cause && typeof cause === "object" && "code" in cause
-    ? String((cause as {code?: unknown}).code ?? "")
+    ? String((cause as { code?: unknown }).code ?? "")
     : "";
   return [error.message, causeMessage, causeCode].filter(Boolean).join(" ");
 }
 
-export async function testProxyConnection(input: {proxyUrl?: unknown; targetUrl?: unknown; proxyKind?: unknown}): Promise<ProxyTestResult> {
-  const {proxyKind, proxyUrl} = resolveTestProxyUrl(input);
+export async function testProxyConnection(input: { proxyUrl?: unknown; targetUrl?: unknown; proxyKind?: unknown }): Promise<ProxyTestResult> {
+  const { proxyKind, proxyUrl } = resolveTestProxyUrl(input);
   const targetUrl = normalizeTestUrl(input.targetUrl);
   const started = Date.now();
   const abortController = new AbortController();
