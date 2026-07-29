@@ -42,6 +42,7 @@ const DEFAULT_INSECURE_TLS = true;
 const FETCH_RETRY_COUNT = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
 const SMS_NUMBER_ACQUIRE_INTERVAL_MS = 1000;
+const SMS_SEND_FAILURE_RETRY_INTERVAL_MS = 5000;
 const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
 const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
 const EMAIL_OTP_TIMESTAMP_SKEW_MS = 10_000;
@@ -172,6 +173,11 @@ function resolveAuthFlowUrl(payload: AuthFlowResponse, operation: string): strin
     return pageURL;
   }
   throw new Error(`${operation}响应缺少 continue_url/page: ${JSON.stringify(payload)}`);
+}
+
+function isTerminalSmsSendError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\bfraud_guard\b/i.test(message);
 }
 
 interface AuthSessionWorkspace {
@@ -1077,6 +1083,7 @@ export class OpenAIClient {
     const MAX_SUBMIT_RETRY = 3;
 
     let lastError: Error | null = null;
+    let waitBeforeNextPhoneMs = 0;
     console.log(
       `[SMS] 短信策略: 最多 ${MAX_PHONES} 个号码，单号最多发送 ${MAX_SENDS_PER_PHONE} 次，每次轮询 ${POLLS_PER_PHONE} 次`,
     );
@@ -1084,8 +1091,10 @@ export class OpenAIClient {
     for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
       this.throwIfCancelled();
       if (phoneIdx > 1) {
-        console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 等待 ${SMS_NUMBER_ACQUIRE_INTERVAL_MS}ms 后再次获取号码`);
-        await this.wait(SMS_NUMBER_ACQUIRE_INTERVAL_MS);
+        const waitMs = waitBeforeNextPhoneMs > 0 ? waitBeforeNextPhoneMs : SMS_NUMBER_ACQUIRE_INTERVAL_MS;
+        waitBeforeNextPhoneMs = 0;
+        console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 等待 ${waitMs}ms 后再次获取号码`);
+        await this.wait(waitMs);
       }
       console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从短信平台获取号码`);
       let lease: ActivationLease;
@@ -1105,11 +1114,16 @@ export class OpenAIClient {
         console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信成功 phone=${phoneNumber}`);
       } catch (error) {
         this.throwIfCancelled();
+        const err = error instanceof Error ? error : new Error(String(error));
         console.warn(
-          `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信失败 phone=${phoneNumber}: ${(error as Error).message}`,
+          `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信失败 phone=${phoneNumber}: ${err.message}`,
         );
-        lastError = error as Error;
+        lastError = err;
         await this.smsBroker.discardCurrentActivationAndCancelLater();
+        if (isTerminalSmsSendError(err)) {
+          throw err;
+        }
+        waitBeforeNextPhoneMs = SMS_SEND_FAILURE_RETRY_INTERVAL_MS;
         continue;
       }
 
@@ -1153,11 +1167,16 @@ export class OpenAIClient {
               );
             } catch (sendError) {
               this.throwIfCancelled();
-              lastError = sendError as Error;
+              const err = sendError instanceof Error ? sendError : new Error(String(sendError));
+              lastError = err;
               console.warn(
-                `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信失败 phone=${phoneNumber}: ${(sendError as Error).message}`,
+                `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信失败 phone=${phoneNumber}: ${err.message}`,
               );
               await this.smsBroker.discardCurrentActivationAndCancelLater();
+              if (isTerminalSmsSendError(err)) {
+                throw err;
+              }
+              waitBeforeNextPhoneMs = SMS_SEND_FAILURE_RETRY_INTERVAL_MS;
               shouldDiscardPhone = true;
               break;
             }
